@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Installs only into this project's .runtime directory; never changes global Java.
+set -euo pipefail
+project_dir="$(cd "$(dirname "$0")/.." && pwd)"
+runtime_dir="$project_dir/.runtime"
+mkdir -p "$runtime_dir"
+if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
+  echo 'This bootstrap is pinned for Apple Silicon macOS.' >&2
+  exit 1
+fi
+if [[ ! -x "$runtime_dir/jdk-21.0.13+9/Contents/Home/bin/java" ]]; then
+  curl -fsSL --retry 3 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz' -o "$runtime_dir/jdk.tar.gz"
+  archive_sha="$(shasum -a 256 "$runtime_dir/jdk.tar.gz" | awk '{print $1}')"
+  [[ "$archive_sha" == bf036b35b071bfb2f54f2c0af8ee8d88afa95ee6eb3dce02c0f94cfc2524d04a ]] || { echo 'JDK checksum mismatch' >&2; exit 1; }
+  tar -xzf "$runtime_dir/jdk.tar.gz" -C "$runtime_dir"
+  rm "$runtime_dir/jdk.tar.gz"
+fi
+if [[ ! -x "$runtime_dir/clojure/bin/clojure" ]]; then
+  curl -fsSL --retry 3 'https://download.clojure.org/install/clojure-tools-1.12.0.1530.tar.gz' -o "$runtime_dir/clojure.tar.gz"
+  archive_sha="$(shasum -a 256 "$runtime_dir/clojure.tar.gz" | awk '{print $1}')"
+  [[ "$archive_sha" == 0ff24b8a8126ba39d32de784a08767c5df259384cb76c6ee3db4d6102705ed49 ]] || { echo 'Clojure checksum mismatch' >&2; exit 1; }
+  tar -xzf "$runtime_dir/clojure.tar.gz" -C "$runtime_dir"
+  python3 - "$runtime_dir" <<'PY'
+from pathlib import Path
+import shutil, sys
+root = Path(sys.argv[1]); source = root / 'clojure-tools'; target = root / 'clojure'
+(target / 'libexec').mkdir(parents=True, exist_ok=True)
+(target / 'bin').mkdir(exist_ok=True)
+for name in ['deps.edn', 'example-deps.edn', 'tools.edn']:
+    shutil.copy2(source / name, target / name)
+for jar in source.glob('*.jar'):
+    shutil.copy2(jar, target / 'libexec' / jar.name)
+for name in ['clj', 'clojure']:
+    text = (source / name).read_text().replace('PREFIX', str(target)).replace('BINDIR', str(target / 'bin'))
+    path = target / 'bin' / name; path.write_text(text); path.chmod(0o755)
+PY
+  rm "$runtime_dir/clojure.tar.gz"
+fi
+"$project_dir/scripts/clj" -P -M:xtdb:test
+"$project_dir/scripts/clj" -Sdescribe

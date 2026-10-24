@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_dir="$(cd "$(dirname "$0")/.." && pwd)"
+"$project_dir/scripts/clj" -M:xtdb:test
+persistence_path="$(mktemp -d "${TMPDIR:-/tmp}/DeskLoom independent XTDB.XXXXXX")"
+"$project_dir/scripts/clj" -Sdeps '{:paths ["src" "test"]}' -M:xtdb -m desktop.persistence-process write "$persistence_path"
+"$project_dir/scripts/clj" -Sdeps '{:paths ["src" "test"]}' -M:xtdb -m desktop.persistence-process read "$persistence_path"

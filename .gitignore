@@ -1,0 +1,17 @@
+.build/
+.runtime/
+.cpcache/
+controller/.cpcache/
+controller/data/
+evidence/
+*.log
+.DS_Store
+__pycache__/
+._*
+
+# Local validation output and desktop captures
+/tests/**/*.json
+/tests/**/*.txt
+/tests/**/*.edn
+/tests/**/*.png
+/references/tokei/

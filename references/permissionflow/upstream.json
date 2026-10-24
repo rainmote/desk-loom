@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/jaywcjlove/PermissionFlow",
+  "commit": "65434c9ae04dba97cf52c1dffbe3e4e62b547c82",
+  "license": "MIT",
+  "retrieved": "2026-10-24",
+  "scope": "Reference for the native permission guide: bottom attachment, launch transition, compact app drag card, drag passthrough. Not compiled as a dependency."
+}

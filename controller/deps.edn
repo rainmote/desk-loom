@@ -1,0 +1,17 @@
+{:paths ["src" "resources"]
+ :mvn/repos {"central" {:url "https://repo.maven.apache.org/maven2/"}}
+ :mvn/local-repo "../.runtime/m2"
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}
+        org.clojure/data.json {:mvn/version "2.5.2"}
+        com.xtdb/xtdb-api {:mvn/version "2.2.0"}
+        com.xtdb/xtdb-core {:mvn/version "2.2.0"}
+        org.slf4j/slf4j-simple {:mvn/version "2.0.17"}}
+ :aliases
+ {:xtdb {:jvm-opts ["--add-opens=java.base/java.nio=ALL-UNNAMED"
+                    "--enable-native-access=ALL-UNNAMED"
+                    "-Dio.netty.tryReflectionSetAccessible=true"
+                    "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn"
+                    "-Xmx768m" "-XX:MaxDirectMemorySize=256m"]}
+  :repl {:main-opts ["-e" "(require '[desktop.core :as desktop] '[desktop.db :as db])" "-r"]}
+  :demo {:main-opts ["-m" "desktop.demo"]}
+  :test {:extra-paths ["test"] :main-opts ["-m" "desktop.test-runner"]}}}

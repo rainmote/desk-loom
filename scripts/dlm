@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""DeskLoom CLI. Works from the source tree or the installed app's Resources."""
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+# A ~/.local/bin symlink must resolve beside the packaged RPC module.
+SCRIPT_DIRECTORY = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.dont_write_bytecode = True  # Keep the signed app bundle immutable.
+import rpc
+
+APPLICATION = pathlib.Path("/Applications/DeskLoom.app")
+
+
+def source_directory():
+    configuration = SCRIPT_DIRECTORY / "BuildConfiguration.json"
+    if configuration.is_file():
+        try:
+            source = json.loads(configuration.read_text())["sourceDirectory"]
+            if not isinstance(source, str) or not pathlib.Path(source).is_absolute():
+                raise ValueError()
+            root = pathlib.Path(source)
+        except (OSError, ValueError, KeyError, TypeError):
+            raise rpc.RPCError("DeskLoom's source configuration is invalid. Rebuild the app from its project.") from None
+    else:
+        root = SCRIPT_DIRECTORY.parent
+    if not (root / "scripts/clj").is_file():
+        raise rpc.RPCError("The configured source project is missing; the Clojure REPL needs that project and its local runtime.")
+    return root
+
+
+def parser():
+    result = argparse.ArgumentParser(prog="dlm", description="DeskLoom — a local, programmable desktop workbench.")
+    commands = result.add_subparsers(dest="command")
+    commands.add_parser("open", help="Open /Applications/DeskLoom.app")
+    commands.add_parser("status", help="Read native state and actual macOS permissions")
+    commands.add_parser("settings", help="Show settings inside the current popover or workbench")
+    icon = commands.add_parser("icon", help="Read or change the persisted C / D icon")
+    icon.add_argument("selection", nargs="?", type=str.upper, choices=["C", "D"])
+    commands.add_parser("repl", help="Start the project's Clojure + XTDB REPL")
+    commands.add_parser("update", help="Ask the running app to build, install and restart from local source")
+    raw = commands.add_parser("rpc", help="Send one authenticated native RPC, with no automatic retries")
+    raw.add_argument("method")
+    raw.add_argument("params", nargs="?", default="{}", metavar="JSON_PARAMS")
+    return result
+
+
+def main(argv=None):
+    arguments = parser()
+    args = arguments.parse_args(argv)
+    if args.command is None:
+        arguments.print_help()
+        return 0
+    try:
+        if args.command == "open":
+            if not APPLICATION.is_dir():
+                raise rpc.RPCError("DeskLoom is not installed. Run 'bash scripts/build-native.sh' in its source project.")
+            subprocess.run(["/usr/bin/open", str(APPLICATION)], check=True)
+            return 0
+        if args.command == "repl":
+            command = str(source_directory() / "scripts/clj")
+            os.execv(command, [command, "-M:xtdb:repl"])
+        method, params = {
+            "status": ("status", {}),
+            "settings": ("show_settings", {}),
+            "icon": ("icon_settings", {"selected_icon": args.selection} if getattr(args, "selection", None) else {}),
+            "update": ("menu_action", {"action": "update"}),
+            "rpc": (getattr(args, "method", ""), {})
+        }[args.command]
+        if args.command == "rpc":
+            params = rpc.json_object(args.params)
+        response = rpc.call(method, params)
+        code = rpc.print_result(response)
+        # Native menu actions can be understood but refused while busy.
+        if args.command == "update" and response.get("result", {}).get("accepted") is False:
+            print("DeskLoom: update was not started; stop the control session or wait for the current update.", file=sys.stderr)
+            return 1
+        return code
+    except (rpc.RPCError, OSError, subprocess.CalledProcessError) as error:
+        print(f"DeskLoom: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

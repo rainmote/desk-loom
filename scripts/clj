@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_dir="$(cd "$(dirname "$0")/.." && pwd)"
+export JAVA_HOME="$project_dir/.runtime/jdk-21.0.13+9/Contents/Home"
+export CLJ_CONFIG="$project_dir/.runtime/clj-config"
+export CLJ_CACHE="$project_dir/.runtime/clj-cache"
+if [[ ! -x "$JAVA_HOME/bin/java" || ! -x "$project_dir/.runtime/clojure/bin/clojure" ]]; then
+  echo 'Local runtime is missing. Run scripts/clj-setup first.' >&2
+  exit 1
+fi
+cd "$project_dir/controller"
+exec "$project_dir/.runtime/clojure/bin/clojure" "$@"

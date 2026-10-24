@@ -1,0 +1,23 @@
+{
+  "created": "2026-10-24",
+  "product": "DeskLoom",
+  "generator": "built-in image_gen",
+  "default": "C",
+  "selected": [
+    "C",
+    "D"
+  ],
+  "transparent_background": true,
+  "prompts": [
+    {
+      "icon": "C",
+      "backgroundRemoval": "Use case: background-extraction. Edit target: supplied DeskLoom Icon C. Remove the ENTIRE large white rounded-square app tile/backplate, including its white fill between the purple shapes. Retain only the two purple parentheses and the central purple cursor arrow, with their existing orientation, shapes, spacing, violet shading and crisp outlines. Empty space inside and around the parentheses and cursor MUST be genuine transparent alpha, not white, not gray, no checkerboard pixels. Remove background shadows, white outlines, floating specks and all remnants of the white tile. The result is three clean standalone purple symbols on transparent background. Preserve square canvas and current composition. No new words, no new objects, no backdrop, no outer border. This will be used directly in a macOS menu bar on light and dark surfaces.",
+      "edgeRefinement": "Refine ONLY the transparency mask of this icon. Keep the solid purple parentheses and cursor unchanged. Remove ALL disconnected purple/blue specks in empty space (especially the conspicuous blue cloud above and right of the arrow), the blue pixel fringe, and all shadow haze. There must be exactly THREE connected solid objects with smoothly antialiased outlines: left parenthesis, cursor, right parenthesis. EVERYTHING else including all the gaps must have alpha=0. Do not draw any background, no square plate, no glow, no shadow, no white matte. Transparent RGBA image."
+    },
+    {
+      "icon": "D",
+      "backgroundRemoval": "Use case: background-extraction. Edit target: supplied DeskLoom Icon D. Remove ONLY the large outer white rounded-square app backplate and all its background shadows. Preserve the two overlapping lavender window panels and purple cursor as the icon's subject, same arrangement and recognizable silhouette. The front panel is part of the subject and may keep its lavender translucent surface, but every pixel outside the combined two-window silhouette must be genuine transparent alpha. No large enclosing white tile, no new rounded-square container, no opaque background, no checkerboard pixels, no white halo or specks. Preserve square canvas, existing purple/lavender colors and clean beveled shapes. This is a standalone transparent macOS app/menu-bar icon, no text.",
+      "edgeRefinement": "Refine ONLY the outer transparency mask of this icon. Keep the two lavender windows and purple cursor unchanged. Remove the obvious rough white debris along the bottom and right edge, and all disconnected specks everywhere. The entire pair of overlapping windows must have ONE smooth, clean, continuous silhouette, with a thin antialiased boundary and immediately fully transparent empty space outside. There must be no exterior shadow, haze, glow, white fringe, or matte. Do not add any background or app square plate. Preserve the interior lavender panels and cursor. Transparent RGBA image, clean production cutout."
+    }
+  ]
+}

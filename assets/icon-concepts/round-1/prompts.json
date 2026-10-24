@@ -1,0 +1,27 @@
+{
+  "created": "2026-10-24",
+  "generator": "built-in image_gen",
+  "purpose": "Icon concepts for user selection; not installed",
+  "concepts": [
+    {
+      "key": "A",
+      "name": "聚焦窗口",
+      "prompt": "Use case: logo-brand / stylized-concept. Design ONE original premium macOS application icon, for a local desktop automation application called Computer Use Prototype. This is a standalone app icon concept for a chooser, not a screenshot or a contact sheet. Concept A, \"Focus Window\": one large precise white desktop cursor entering the bottom-right area of a simplified white window outline, with a restrained bright lavender highlight on the window's upper-left corner signifying the active controlled window. Purple is the existing UI accent. Rich violet squircle tile, carefully restrained soft gradient from #9B6CF4 toward #6440C4, subtle satin depth and a very gentle bevel; not a glossy toy. Confident, extremely simple silhouette readable at 32 pixels. Make the window and arrow visually integrated, a single intentional mark, not a collage. Square 1024x1024 composition, one centered macOS rounded square occupying 82% width and height, neutral warm off-white canvas, faint grounded shadow, front-on orthographic presentation, equal margins. No letters, numbers, captions, brand names, robots, brains, eyes, gears, sparkles, padlocks or existing logos. No extra elements, no dock or computer mockup. Beautiful native desktop utility icon."
+    },
+    {
+      "key": "B",
+      "name": "操作回环",
+      "prompt": "Use case: logo-brand / stylized-concept. Design ONE original premium macOS application icon for a local programmable desktop automation application called Computer Use Prototype. Standalone chooser concept B, \"Action Loop\". A continuous thick lavender ribbon makes a nearly closed circular loop; one end naturally becomes a crisp desktop pointer arrow pointing diagonally upper-left. The loop represents observe-act-verify, but must not look like a refresh button: use an asymmetrical elegant loop with a large unmistakable mouse pointer terminal and no second arrowhead. One sculptural geometric symbol, big and simple, optically balanced at 32 pixels. Deep muted plum-black rounded-square tile #221A33, lavender and violet ribbon #B7A0FF to #8056E8, subtle satin shading, premium macOS native utility aesthetic, no neon glow. Square 1024x1024 composition, one centered macOS squircle occupying 82% width and height, neutral warm off-white canvas, faint grounded shadow, front-on orthographic presentation, equal margins. No text, letters, labels, robots, brains, eyes, gears, sparkles, logos, other panels or mockups."
+    },
+    {
+      "key": "C",
+      "name": "可编程桌面",
+      "prompt": "Use case: logo-brand / stylized-concept. Design ONE original premium macOS application icon for Computer Use Prototype, a local Clojure REPL-controlled desktop automation app. Standalone chooser concept C, \"Programmable Desktop\". A smart bold geometric emblem made of two opposing rounded violet parentheses enclosing a crisp purple desktop cursor arrow. The parentheses evoke Lisp and an editable structured environment; the pointer is centered and large, the three forms feel like one carefully designed mark. No tiny code or other lines. Matte porcelain-white rounded-square tile, purple #8153D7 symbol, subtle lavender ambient shading and extremely restrained embossed depth. High contrast, excellent at Dock sizes, contemporary native Mac developer-tool character, thoughtful and friendly without being cute. Square 1024x1024 composition, one centered macOS squircle occupying 82% width and height, neutral warm off-white canvas, faint grounded shadow, front-on orthographic presentation, equal margins. No words, letters, captions, terminal screenshots, angle brackets, robots, brains, eyes, gears, sparkles or existing logos. Only the requested large parentheses and cursor mark."
+    },
+    {
+      "key": "D",
+      "name": "窗口层叠",
+      "prompt": "Use case: logo-brand / stylized-concept. Design ONE original premium macOS application icon for a local desktop control and observation application called Computer Use Prototype. Standalone chooser concept D, \"Living Windows\". Two generously sized overlapping rounded desktop-window cards form a distinctive simple diagonal stack. Back card muted violet; front card pale translucent lavender with a small solid purple active marker at its upper-left, and one bold dark-violet mouse cursor in its lower-right area. No tiny window controls or tiny text. A restrained frosted-glass material, soft dimensional edges, polished modern native Mac icon, calm and precise. Pale lavender-white squircle base, violet accents #8C55EB, clear silhouette at small Dock sizes. Square 1024x1024 composition, one centered macOS squircle occupying 82% width and height, neutral warm off-white canvas, faint grounded shadow, front-on overall presentation with just subtle depth in the window stack, equal margins. No words, numbers, labels, other mockups, robots, brains, eyes, gears, sparkles, badges or existing logos."
+    }
+  ]
+}
