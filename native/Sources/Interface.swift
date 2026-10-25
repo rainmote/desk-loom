@@ -2,13 +2,21 @@ import AppKit
 import Combine
 import SwiftUI
 
+struct LLMWindow: Identifiable, Hashable {
+    let id: String
+    let pid: Int
+    let title: String
+    let appName: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var appName: String = "TextEdit"
+    @Published var appName: String = "未选择应用"
     @Published var windowTitle: String = ""
     @Published var phase: String = "待连接"
-    @Published var detail: String = "在 Clojure REPL 中读取控件、执行操作并验证结果。"
+    @Published var detail: String = "选择应用窗口后，可让 LLM 操作或通过 MCP 控制。"
     @Published var isActive: Bool = false
+    @Published var activeWindowCount: Int = 0
     @Published var accessibilityGranted: Bool = false
     @Published var screenRecordingGranted: Bool = false
     @Published var permissionSettingsMessage: String? = nil
@@ -22,9 +30,18 @@ final class AppModel: ObservableObject {
     @Published var updateMessage: String? = nil
     @Published var inspectorShowingSettings: Bool = false
     @Published var popoverShowingSettings: Bool = false
+    @Published var llmAvailable: Bool = false
+    @Published var llmAuthenticated: Bool = false
+    @Published var llmStatus: String = "正在检查本地 ChatGPT 登录状态…"
+    @Published var llmRunning: Bool = false
+    @Published var llmPrompt: String = ""
+    @Published var llmModel: String = ""
+    @Published var llmWindows: [LLMWindow] = []
+    @Published var llmSelectedWindowIDs: Set<String> = []
+    @Published var llmOutput: String = ""
     var showingSettings: Bool { inspectorShowingSettings || popoverShowingSettings }
+    var controlledWindowCount: Int { max(0, activeWindowCount) }
 
-    var onStart: (() -> Void)?
     var onStop: (() -> Void)?
     var onRefresh: (() -> Void)?
     var onRequestAccessibility: (() -> Void)?
@@ -33,6 +50,11 @@ final class AppModel: ObservableObject {
     var onRecheckPermissions: (() -> Void)?
     var onSelectIcon: ((String) -> Void)?
     var onUpdate: (() -> Void)?
+    var onLLMRefresh: (() -> Void)?
+    var onLLMLogin: (() -> Void)?
+    var onLLMRun: (() -> Void)?
+    var onLLMStop: (() -> Void)?
+    var onLLMRefreshWindows: (() -> Void)?
 
     var accessibilityPermissionName: String {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
@@ -93,10 +115,7 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
     private var targetProcessID: pid_t?
     private var overlayVisibilityReason = "inactive"
     private var cancellable: AnyCancellable?
-    private var previewFreshnessCancellable: AnyCancellable?
     private var overlayVisibilityCancellable: AnyCancellable?
-    private var statusPreviewSource: NSImage?
-    private var statusPreviewCapture: Date?
     private var statusIconVariant: String?
 
     init(model: AppModel) {
@@ -126,7 +145,7 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
             button.target = self
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.setAccessibilityLabel("DeskLoom 操作状态")
+            button.setAccessibilityLabel("DeskLoom 控制窗口")
             button.imagePosition = .imageLeading
             button.imageScaling = .scaleNone
         }
@@ -155,10 +174,6 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
             // Published sends before its value changes. Update native chrome on the next turn.
             DispatchQueue.main.async { self?.refreshChrome() }
         }
-        // Drop an expired thumbnail even when no new observation arrives from the engine.
-        previewFreshnessCancellable = Timer.publish(every: 1, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in self?.refreshStatusPreview() }
         // Window movement and occlusion can change without another AX action.
         // Follow visible target geometry without activating either application.
         overlayVisibilityCancellable = Timer.publish(every: 0.2, on: .main, in: .common)
@@ -376,9 +391,10 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         switch action {
         case "show_window": showWindow()
         case "update":
-            guard !model.isUpdating, !model.isActive, let update = model.onUpdate else { return false }
+            guard !model.isUpdating, !model.isActive, !model.llmRunning, let update = model.onUpdate else { return false }
             update()
         case "quit":
+            model.onLLMStop?()
             model.onStop?()
             NSApp.terminate(nil)
         default: return false
@@ -416,8 +432,15 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
                                        width: visible.width, height: visible.height))
             },
             "statusTitle": statusItem.button?.attributedTitle.string ?? "",
-            "statusThumbnailVisible": statusPreviewSource != nil && model.previewIsLive(),
-            "statusIconVisible": statusPreviewSource == nil && statusItem.button?.image != nil,
+            "statusThumbnailVisible": false,
+            "statusIconVisible": statusItem.button?.image != nil,
+            "controlledWindowCount": model.controlledWindowCount,
+            "llmAvailable": model.llmAvailable,
+            "llmAuthenticated": model.llmAuthenticated,
+            "llmRunning": model.llmRunning,
+            "llmStatus": model.llmStatus,
+            "llmWindowCount": model.llmWindows.count,
+            "llmSelectedWindowIDs": model.llmSelectedWindowIDs.sorted(),
             "selectedIcon": model.selectedIcon,
             "showingSettings": model.showingSettings,
             "settingsVisible": settingsHost != nil,
@@ -491,7 +514,7 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         guard let event = NSApp.currentEvent else { toggleStatusPopover(); return }
         if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
             dismissPopover(reason: "context_menu")
-            updateMenuItem?.isEnabled = !model.isUpdating && !model.isActive && model.onUpdate != nil
+            updateMenuItem?.isEnabled = !model.isUpdating && !model.isActive && !model.llmRunning && model.onUpdate != nil
             NSMenu.popUpContextMenu(contextMenu, with: event, for: sender)
         } else {
             toggleStatusPopover()
@@ -504,66 +527,26 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
     }
 
     private func refreshChrome() {
-        let title = model.isActive ? "● \(model.appName)" : "● 空闲 · \(model.appName)"
-        let attributed = NSMutableAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+        let attributed = NSAttributedString(string: "\(model.controlledWindowCount)", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.labelColor
         ])
-        attributed.addAttribute(.foregroundColor,
-                                value: model.isActive ? InterfaceStyle.nativePurple : NSColor.secondaryLabelColor,
-                                range: NSRange(location: 0, length: 1))
         statusItem.button?.attributedTitle = attributed
-        statusItem.button?.toolTip = "\(model.appName) · \(model.phase)\n\(model.detail)"
-        statusItem.button?.setAccessibilityValue("\(model.isActive ? "正在操作" : "空闲")，\(model.appName)，\(model.phase)")
-        updateMenuItem?.isEnabled = !model.isUpdating && !model.isActive && model.onUpdate != nil
-        refreshStatusPreview()
+        statusItem.button?.toolTip = "DeskLoom · 正在控制 \(model.controlledWindowCount) 个窗口\n\(model.appName) · \(model.phase)\n\(model.detail)"
+        statusItem.button?.setAccessibilityValue("正在控制 \(model.controlledWindowCount) 个窗口，\(model.appName)，\(model.phase)")
+        updateMenuItem?.isEnabled = !model.isUpdating && !model.isActive && !model.llmRunning && model.onUpdate != nil
+        refreshStatusIcon()
         refreshOverlay()
     }
 
-    private func refreshStatusPreview() {
-        guard model.previewIsLive(), let source = model.previewImage,
-              source.size.width > 0, source.size.height > 0 else {
-            if statusPreviewSource != nil || statusIconVariant != model.selectedIcon || statusItem.button?.image == nil {
-                let icon = applicationIcon(model.selectedIcon)?.copy() as? NSImage
-                icon?.size = NSSize(width: 20, height: 20)
-                icon?.isTemplate = false
-                icon?.accessibilityDescription = "DeskLoom 图标 \(model.selectedIcon)"
-                statusItem.button?.image = icon
-                statusIconVariant = model.selectedIcon
-            }
-            statusPreviewSource = nil
-            statusPreviewCapture = nil
-            return
-        }
-        // A model refresh can publish several properties together. Reuse the thumbnail
-        // across those updates and the freshness timer until a new frame arrives.
-        guard source !== statusPreviewSource || model.lastCapture != statusPreviewCapture else { return }
-        let thumbnail = NSImage(size: NSSize(width: 32, height: 20), flipped: false) { rect in
-            let bounds = rect.insetBy(dx: 1, dy: 1)
-            let shape = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
-            NSGraphicsContext.saveGraphicsState()
-            shape.addClip()
-            NSColor.black.withAlphaComponent(0.12).setFill()
-            shape.fill()
-            let scale = min(bounds.width / source.size.width, bounds.height / source.size.height)
-            let imageSize = NSSize(width: source.size.width * scale, height: source.size.height * scale)
-            let imageRect = NSRect(x: bounds.midX - imageSize.width / 2,
-                                   y: bounds.midY - imageSize.height / 2,
-                                   width: imageSize.width, height: imageSize.height)
-            source.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1,
-                        respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
-            NSGraphicsContext.restoreGraphicsState()
-            NSColor.white.withAlphaComponent(0.25).setStroke()
-            shape.lineWidth = 0.5
-            shape.stroke()
-            return true
-        }
-        thumbnail.isTemplate = false
-        thumbnail.accessibilityDescription = "\(model.appName)实时缩略图"
-        statusItem.button?.image = thumbnail
-        statusIconVariant = nil
-        statusPreviewSource = source
-        statusPreviewCapture = model.lastCapture
+    private func refreshStatusIcon() {
+        guard statusIconVariant != model.selectedIcon || statusItem.button?.image == nil else { return }
+        let icon = applicationIcon(model.selectedIcon)?.copy() as? NSImage
+        icon?.size = NSSize(width: 20, height: 20)
+        icon?.isTemplate = false
+        icon?.accessibilityDescription = "DeskLoom 图标 \(model.selectedIcon)"
+        statusItem.button?.image = icon
+        statusIconVariant = model.selectedIcon
     }
 
     private func refreshOverlay() {
@@ -777,6 +760,7 @@ private struct ControlView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: compact ? 12 : 16) {
                     if model.isUpdating || model.updateMessage != nil { updateStatus }
+                    LLMTaskView(model: model, compact: compact)
                     if needsPermissions { permissions }
                     target
                     PreviewView(model: model, compact: compact)
@@ -803,7 +787,7 @@ private struct ControlView: View {
             } else {
                 HStack(spacing: 6) {
                     Image(systemName: "terminal")
-                    Text("Clojure REPL → Swift AX → 验证 → XTDB")
+                    Text("用自然语言操作选定窗口")
                     Spacer()
                     quitButton
                 }
@@ -815,7 +799,7 @@ private struct ControlView: View {
     }
 
     private var quitButton: some View {
-        Button { model.onStop?(); NSApp.terminate(nil) } label: {
+        Button { model.onLLMStop?(); model.onStop?(); NSApp.terminate(nil) } label: {
             Label("退出 DeskLoom", systemImage: "power")
         }
         .buttonStyle(.plain)
@@ -856,7 +840,7 @@ private struct ControlView: View {
             Spacer(minLength: 8)
             HStack(spacing: 5) {
                 Circle().fill(model.isActive ? InterfaceStyle.purple : Color.secondary.opacity(0.6)).frame(width: 6, height: 6)
-                Text(model.isActive ? "操作中" : "空闲")
+                Text(model.isActive ? "\(model.controlledWindowCount) 个窗口" : "空闲")
             }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(model.isActive ? InterfaceStyle.purple : Color.secondary)
@@ -884,22 +868,24 @@ private struct ControlView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            if model.isActive {
-                Button { model.onStop?() } label: {
-                    Label("停止操作", systemImage: "stop.fill").frame(maxWidth: .infinity)
+            if model.isActive || model.llmRunning {
+                Button { model.onLLMStop?(); model.onStop?() } label: {
+                    Label("停止全部操作", systemImage: "stop.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(".", modifiers: [.command])
             } else {
-                Button { model.onStart?() } label: {
-                    Label("连接 \(model.appName)", systemImage: "play.fill").frame(maxWidth: .infinity)
+                Button { model.onLLMRefreshWindows?() } label: {
+                    Label("刷新应用窗口", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+                .disabled(model.llmRunning || model.isUpdating)
             }
             Button { model.onRefresh?() } label: {
                 Image(systemName: "arrow.clockwise").frame(width: 23)
             }
             .buttonStyle(.bordered)
+            .disabled(model.llmRunning || model.isUpdating)
             .help("刷新无障碍结构和窗口预览")
             .accessibilityLabel("刷新结构和预览")
         }
@@ -1040,6 +1026,177 @@ private struct ControlView: View {
         }
         .buttonStyle(.plain)
         .help(granted ? "打开\(title)设置" : "需要在 macOS 系统设置中允许\(title)")
+    }
+}
+
+@MainActor
+private struct LLMTaskView: View {
+    @ObservedObject var model: AppModel
+    let compact: Bool
+
+    private var canRun: Bool {
+        model.llmAvailable && model.llmAuthenticated && model.accessibilityGranted &&
+        !model.isActive && !model.isUpdating && !model.llmPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !model.llmSelectedWindowIDs.isEmpty && model.llmSelectedWindowIDs.count <= 8 &&
+        model.llmSelectedWindowIDs.isSubset(of: Set(model.llmWindows.map(\.id)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 10 : 12) {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles").foregroundStyle(InterfaceStyle.purple)
+                Text("交给 LLM 操作").font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 4)
+                if model.llmRunning { ProgressView().controlSize(.small) }
+            }
+            account
+            Divider()
+            windowPicker
+            VStack(alignment: .leading, spacing: 6) {
+                Text("操作任务").font(.system(size: 11, weight: .medium))
+                ZStack(alignment: .topLeading) {
+                    if model.llmPrompt.isEmpty {
+                        Text("例如：读取资料窗口，将三条摘要填写到另一个选定窗口")
+                            .font(.system(size: 12)).foregroundStyle(.tertiary)
+                            .padding(.horizontal, 6).padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text: $model.llmPrompt)
+                        .font(.system(size: 12))
+                        .scrollContentBackground(.hidden)
+                        .padding(3)
+                        .accessibilityLabel("LLM 操作任务")
+                }
+                .frame(height: compact ? 76 : 96)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.secondary.opacity(0.2)))
+                .disabled(model.llmRunning)
+            }
+            HStack(spacing: 8) {
+                Text("模型").font(.system(size: 11)).foregroundStyle(.secondary)
+                TextField("留空使用默认模型", text: $model.llmModel)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .accessibilityLabel("模型，可留空")
+                    .disabled(model.llmRunning)
+            }
+            if model.llmRunning {
+                Button { model.onLLMStop?() } label: {
+                    Label("停止任务并释放所有窗口", systemImage: "stop.fill").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button { model.onLLMRun?() } label: {
+                    Label("执行任务 · \(model.llmSelectedWindowIDs.count) 个窗口", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canRun)
+            }
+            if !model.llmOutput.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(model.llmRunning ? "执行进度" : "最近结果")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                    ScrollView(.vertical, showsIndicators: true) {
+                        Text(model.llmOutput)
+                            .font(.system(size: 11))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxHeight: compact ? 110 : 180)
+                }
+                .padding(9)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+            }
+        }
+        .padding(compact ? 11 : 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(InterfaceStyle.purple.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(InterfaceStyle.purple.opacity(0.16)))
+    }
+
+    private var account: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 5) {
+                Image(systemName: model.llmAuthenticated ? "checkmark.circle.fill" : "person.crop.circle")
+                    .foregroundStyle(model.llmAuthenticated ? Color.green : Color.secondary)
+                Text(model.llmAuthenticated ? "已连接 ChatGPT 订阅" : "ChatGPT 订阅登录")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer(minLength: 3)
+                Button { model.onLLMRefresh?() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .disabled(model.llmRunning)
+                .help("重新检查本地登录状态")
+                .accessibilityLabel("重新检查 ChatGPT 登录状态")
+            }
+            Text(model.llmStatus)
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if !model.llmAuthenticated {
+                Button("登录 ChatGPT") { model.onLLMLogin?() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!model.llmAvailable || model.llmRunning)
+            }
+        }
+    }
+
+    private var windowPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("协作窗口").font(.system(size: 11, weight: .medium))
+                Text("已选 \(model.llmSelectedWindowIDs.count)/8")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                Button { model.onLLMRefreshWindows?() } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10))
+                .foregroundStyle(InterfaceStyle.purple)
+                .disabled(model.llmRunning)
+                .accessibilityLabel("刷新可操作窗口")
+            }
+            if model.llmWindows.isEmpty {
+                Text("点击刷新，然后勾选允许 LLM 操作的窗口。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(model.llmWindows) { window in
+                            Toggle(isOn: Binding(
+                                get: { model.llmSelectedWindowIDs.contains(window.id) },
+                                set: { selected in
+                                    if selected && model.llmSelectedWindowIDs.count < 8 {
+                                        model.llmSelectedWindowIDs.insert(window.id)
+                                    } else if !selected { model.llmSelectedWindowIDs.remove(window.id) }
+                                })) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(window.title.isEmpty ? "未命名窗口" : window.title)
+                                            .font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                        Text(window.appName).font(.system(size: 10)).foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .toggleStyle(.checkbox)
+                                .help("\(window.appName) · \(window.title)")
+                                .disabled(model.llmRunning || (!model.llmSelectedWindowIDs.contains(window.id) && model.llmSelectedWindowIDs.count >= 8))
+                        }
+                    }.padding(8)
+                }
+                .frame(height: min(CGFloat(model.llmWindows.count) * 42 + 9, compact ? 126 : 168))
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+            }
+            Text(model.llmRunning ? "当前控制 \(model.controlledWindowCount) 个窗口，任务结束后统一释放。"
+                                  : "LLM 可在选定窗口之间读取、整理和填写内容。")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

@@ -33,7 +33,7 @@ final class UpdateController {
 
     func start() {
         refresh()
-        guard !model.isActive else {
+        guard !model.isActive, !model.llmRunning else {
             model.updateMessage = "请先停止当前电脑控制会话，再更新应用。"
             return
         }

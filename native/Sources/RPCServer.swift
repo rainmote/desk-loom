@@ -66,7 +66,9 @@ final class RPCServer {
                                 let result = try await self.handler(method, params)
                                 self.send(connection, status: 200, object: ["ok": true, "result": result])
                             } catch let failure as DesktopFailure {
-                                self.send(connection, status: 200, object: ["ok": false, "error": ["code": failure.code, "message": failure.message]])
+                                var error: [String: Any] = ["code": failure.code, "message": failure.message]
+                                if let details = failure.details { error["details"] = details }
+                                self.send(connection, status: 200, object: ["ok": false, "error": error])
                             } catch {
                                 self.send(connection, status: 200, object: ["ok": false, "error": ["code": "internal-error", "message": error.localizedDescription]])
                             }

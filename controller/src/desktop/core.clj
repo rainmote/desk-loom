@@ -1,159 +1,88 @@
 (ns desktop.core
-  (:require [desktop.client :as client]
+  "Interactive wrappers over the same multi-window service used by MCP and JSONL.
+   Every target is explicit; connecting never launches an app or attaches a window."
+  (:require [desktop.agent :as agent]
             [desktop.db :as db])
-  (:import [java.time Instant]
-           [java.util UUID]))
+  (:import [java.util UUID]))
 
 (defn connect!
-  "Connect to the native app and open local XTDB. Close with close!."
+  "Check the native connection and create an independent controller context.
+   Options are :endpoint and :db-path; XTDB opens lazily on the first saved visit.
+   Always call close! to release this controller's sessions and database."
   ([] (connect! {}))
-  ([{:keys [endpoint db-path]}]
-   (let [c (if endpoint (client/connect endpoint) (client/connect))]
-     {:client c :store (db/open! (or db-path (db/default-path))) :session (atom nil)})))
+  ([options]
+   (let [controller (agent/context options)]
+     (agent/invoke! controller "computer_capabilities" {})
+     controller)))
 
-(defn status [controller] (client/rpc! (:client controller) :status))
-(defn preview [controller] (client/rpc! (:client controller) :preview))
+(defn status [controller]
+  (agent/invoke! controller "computer_capabilities" {}))
 
-(defn start! [controller]
-  (let [session (try (client/rpc! (:client controller) :start)
-                     (catch clojure.lang.ExceptionInfo e
-                       (if (= "window-not-ready" (:code (ex-data e)))
-                         (status controller) (throw e))))]
-    (when-not (and (string? (:session_id session)) (string? (:fixture_path session)))
-      (throw (ex-info "Native start response is missing fixture identity" {:code :invalid-session})))
-    (reset! (:session controller) session)
-    (db/event! (:store controller) (:session_id session) :session session)
-    session))
+(defn windows
+  "List existing windows. Optional filters are :pid and :bundle_id."
+  ([controller] (windows controller {}))
+  ([controller filters] (agent/invoke! controller "computer_windows" filters)))
 
-(defn observe! [controller]
-  (let [snapshot (client/rpc! (:client controller) :observe)
-        session @(:session controller)]
-    (when-not (= (:session_id session) (:session_id snapshot))
-      (throw (ex-info "Session changed; refusing to use snapshot" {:code :session-changed})))
-    snapshot))
+(defn attach!
+  "Attach an explicitly selected :window_id, optionally checked against :pid or
+   :bundle_id. Returns :session_id and :observation; other sessions stay attached."
+  [controller target]
+  (when-not (and (map? target) (string? (:window_id target)) (seq (:window_id target)))
+    (agent/failure :target-required "Choose an explicit window_id from windows before attaching."))
+  (agent/invoke! controller "computer_attach" target))
 
-(defn unique-text-area
-  "Refuse incomplete trees, disabled controls and ambiguous selectors."
-  [snapshot]
-  (when-not (true? (:complete snapshot))
-    (throw (ex-info "Accessibility snapshot is incomplete" {:code :incomplete-snapshot})))
-  (let [matches (filter #(and (= "AXTextArea" (:role %))
-                             (true? (:settable %)) (true? (:enabled %))) (:nodes snapshot))]
-    (when-not (= 1 (count matches))
-      (throw (ex-info "Expected exactly one writable TextEdit text area"
-                      {:code :ambiguous-target :matches (count matches)})))
-    (first matches)))
+(defn- scoped [session-id options]
+  (when-not (and (string? session-id) (seq session-id))
+    (agent/failure :session-required "Pass the attached window's session_id explicitly."))
+  (when-not (map? options)
+    (agent/failure :invalid-arguments "Operation options must be a map."))
+  (when (and (contains? options :session_id) (not= session-id (:session_id options)))
+    (agent/failure :session-changed "Options cannot override the explicitly selected session_id."))
+  (assoc options :session_id session-id))
 
-(def transient-observation-codes
-  #{"window_not_found" "not_ready" "fixture_not_ready" "no_window" "target_not_ready"
-    "window-not-ready" "window-not-found" "target-not-ready"})
+(defn observe!
+  "Read and persist one owned window. Options include :max_nodes/:max_depth and delta settings."
+  ([controller session-id] (observe! controller session-id {}))
+  ([controller session-id options]
+   (agent/invoke! controller "computer_observe" (scoped session-id options))))
 
-(defn ready-snapshot!
-  "Bounded observation-only polling. Never repeats start or a mutation."
-  ([controller] (ready-snapshot! controller 15000))
-  ([controller timeout-ms]
-   (let [deadline (+ (System/nanoTime) (* timeout-ms 1000000))]
-     (loop []
-       (let [result (try
-                      (let [s (observe! controller)] (unique-text-area s) {:snapshot s})
-                      (catch clojure.lang.ExceptionInfo e
-                        (if (or (transient-observation-codes (:code (ex-data e)))
-                                (#{:ambiguous-target :incomplete-snapshot} (:code (ex-data e))))
-                          {:error e} (throw e))))]
-         (if-let [s (:snapshot result)] s
-           (if (< (System/nanoTime) deadline)
-             (do (Thread/sleep 200) (recur))
-             (throw (ex-info "TextEdit did not become ready within timeout"
-                             {:code :ready-timeout} (:error result))))))))))
+(defn- request [options]
+  (if (contains? options :request_id) options
+    (assoc options :request_id (str (UUID/randomUUID)))))
 
-(defn verify-value!
-  "Re-read the actual AX value until exact text matches, with a strict deadline."
-  [controller expected timeout-ms]
-  (let [deadline (+ (System/nanoTime) (* timeout-ms 1000000))]
-    (loop []
-      (let [s (observe! controller)
-            node (unique-text-area s)]
-        (if (or (= expected (:value node)) (>= (System/nanoTime) deadline))
-          {:passed (= expected (:value node)) :snapshot s :actual (:value node)}
-          (do (Thread/sleep 150) (recur)))))))
+(defn act!
+  "Perform one action, using a fresh snapshot/node pair or unique :selector.
+   A request_id is generated when omitted. Unknown outcomes are never retried."
+  [controller session-id action]
+  (agent/invoke! controller "computer_act" (request (scoped session-id action))))
 
-(defn- report-verification-error!
-  "Preserve an interrupted verification without repeating the desktop action.
-   Reporting failures must not hide the original exception."
-  [controller sid request-id stage ^Exception error]
-  (let [failure {:request_id request-id :stage stage :outcome "unknown" :retry false
-                 :message (.getMessage error)
-                 :code (str (or (:code (ex-data error)) (.getName (class error))))}]
-    (try
-      (db/event! (:store controller) sid :verification-error failure)
-      (catch Exception logging-error (.addSuppressed error logging-error)))
-    (try
-      (client/rpc! (:client controller) :report_verification_error
-                   (select-keys failure [:request_id :stage :message]))
-      (catch Exception reporting-error (.addSuppressed error reporting-error)))))
+(defn batch!
+  "Execute up to 20 steps within one session, stopping on errors or unknown results.
+   Optional options may contain :request_id; steps cannot switch sessions."
+  ([controller session-id steps] (batch! controller session-id steps {}))
+  ([controller session-id steps options]
+   (agent/invoke! controller "computer_batch" (request (assoc (scoped session-id options) :steps steps)))))
 
-(defn set-text!
-  "Record before + intent, dispatch once using fresh snapshot tokens, then verify.
-   Native code independently confines the write to this session's fixture window."
-  [controller text]
-  (when-not (string? text) (throw (ex-info "Text must be a string" {:code :invalid-text})))
-  (let [before (ready-snapshot! controller)
-        target (unique-text-area before)
-        sid (:session_id before)
-        store (:store controller)
-        request-id (str (UUID/randomUUID))
-        action {:snapshot_id (:snapshot_id before) :node_id (:id target)
-                :value text :request_id request-id}]
-    (db/snapshot! store :before before)
-    (db/event! store sid :action-intent action)
-    (let [dispatch (try
-                     (client/rpc! (:client controller) :set_value action)
-                     (catch Exception e
-                       (db/event! store sid :action-error
-                                  {:request_id request-id :message (.getMessage e)
-                                   :code (str (:code (ex-data e))) :retry false})
-                       (throw e)))]
-      (let [stage (atom "persist-action-result")
-            {:keys [verification native-verification]}
-            (try
-              (db/event! store sid :action-result {:request_id request-id :result dispatch})
-              (reset! stage "read-back")
-              (let [{:keys [passed snapshot actual]} (verify-value! controller text 5000)
-                    verification {:request_id request-id :passed passed
-                                  :expected text :actual actual
-                                  :before_snapshot (:snapshot_id before)
-                                  :after_snapshot (:snapshot_id snapshot)
-                                  :verified_at (str (Instant/now))}]
-                (reset! stage "persist-read-back")
-                (db/snapshot! store :after snapshot)
-                (db/event! store sid :verification verification)
-                (reset! stage "native-verification")
-                (let [native-verification
-                      (client/rpc! (:client controller) :verify
-                                   {:success passed :expected_value text :request_id request-id :persisted true})]
-                  (when-not (boolean? (:verified native-verification))
-                    (throw (ex-info "Native verification response has no boolean result"
-                                    {:code :invalid-verification-response})))
-                  (reset! stage "persist-native-verification")
-                  (db/event! store sid :native-verification native-verification)
-                  {:verification verification :native-verification native-verification}))
-              (catch Exception error
-                (report-verification-error! controller sid request-id @stage error)
-                (throw error)))]
-        (when-not (true? (:verified native-verification))
-          (throw (ex-info "Native verification did not confirm the current TextEdit value"
-                          {:code :native-verification-failed :verification native-verification})))
-        (when-not (:passed verification)
-          (throw (ex-info "AX read-back does not match requested text"
-                          {:code :verification-failed :verification verification})))
-        verification))))
+(defn screenshot!
+  "Capture exactly one attached window; :max_width is optional."
+  ([controller session-id] (screenshot! controller session-id {}))
+  ([controller session-id options]
+   (agent/invoke! controller "computer_screenshot" (scoped session-id options))))
 
-(defn history [controller] (db/history (:store controller) (:session_id @(:session controller))))
+(defn detach!
+  "Release only the named owned session. Other clients and windows stay attached."
+  [controller session-id]
+  (agent/invoke! controller "computer_detach" (scoped session-id {})))
 
-(defn stop! [controller]
-  (let [result (client/rpc! (:client controller) :stop)]
-    (when-let [sid (:session_id @(:session controller))]
-      (db/event! (:store controller) sid :stop result))
-    result))
+(defn history
+  "Read persisted events for a session, including sessions that have detached.
+   Returned data is historical; its tokens cannot authorize new actions."
+  [controller session-id]
+  (scoped session-id {})
+  (locking controller
+    (db/history (agent/store! controller) session-id)))
 
-(defn close! [controller] (.close ^java.io.Closeable (:store controller)))
+(defn close!
+  "Release all sessions owned by this controller, then close its embedded database."
+  [controller]
+  (agent/close! controller))

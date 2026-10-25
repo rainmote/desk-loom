@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DeskLoom Browser Lab</title>
+    <style>
+      :root { color-scheme: light; font: 16px/1.55 system-ui, sans-serif; color: #172234; background: #f5f7fa; }
+      body { max-width: 960px; margin: 24px auto; padding: 0 20px 36px; }
+      h1 { font-size: 25px; margin-bottom: 4px; }
+      h2 { font-size: 20px; margin-top: 0; }
+      h3 { font-size: 17px; margin-bottom: 8px; }
+      header { margin-bottom: 20px; }
+      header p { margin: 4px 0; }
+      section { margin: 18px 0; padding: 20px; border: 1px solid #d7dfe9; border-radius: 8px; background: white; }
+      label { display: block; margin-bottom: 5px; font-weight: 650; }
+      input, textarea, button { font: inherit; }
+      input, textarea { box-sizing: border-box; width: 100%; border: 1px solid #7d8c9f; border-radius: 4px; padding: 8px 10px; color: #172234; background: white; }
+      textarea { min-height: 90px; resize: vertical; }
+      .field { margin-bottom: 14px; }
+      .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+      button { cursor: pointer; padding: 8px 16px; border: 1px solid #44556d; border-radius: 4px; background: #f1f4f9; color: #172234; }
+      #save-task { background: #244f94; border-color: #244f94; color: white; }
+      :focus-visible { outline: 3px solid #9d4bd8; outline-offset: 3px; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; padding: 10px; background: #f4f6f9; border-radius: 4px; font-size: 14px; }
+      code, output { font-variant-numeric: tabular-nums; }
+      #reference p { margin: 8px 0 14px; }
+      #receipt-status { font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>DeskLoom Browser Lab</h1>
+      <p>本地电脑操作测试 / Local computer-use fixture</p>
+      <p>运行标识 / Run token：<code id="run-token">default</code></p>
+    </header>
+
+    <main>
+      <section aria-labelledby="form-heading">
+        <h2 id="form-heading">测试任务 / Test task</h2>
+        <form id="task-form" autocomplete="off">
+          <div class="field">
+            <label for="task-title">任务标题</label>
+            <input id="task-title" name="title" type="text" aria-label="任务标题" value="示例任务 / Example task" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="task-note">任务备注</label>
+            <textarea id="task-note" name="note" aria-label="任务备注" rows="3" spellcheck="false">这是一条本地测试备注。This note belongs only to the browser fixture.</textarea>
+          </div>
+          <div class="actions">
+            <button id="save-task" type="submit" aria-label="保存任务">保存任务</button>
+            <button id="reset-test" type="button" aria-label="重置测试">重置测试</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="result-section" aria-labelledby="result-heading" data-revision="0">
+        <h2 id="result-heading">操作结果 / Action result</h2>
+        <p id="action-status" role="status" aria-live="polite" aria-atomic="true">状态：待保存 / Ready</p>
+        <p>保存版本 / Revision：<output id="revision-output" aria-label="保存版本">0</output></p>
+        <pre id="result-json" aria-label="最近操作结果"></pre>
+        <p id="receipt-status" role="status" aria-live="polite">事件回执：尚无操作 / No action yet</p>
+      </section>
+
+      <section id="reference" aria-labelledby="reference-heading">
+        <h2 id="reference-heading">测试说明 / Reference notes</h2>
+        <h3>1. 页面范围 / Page scope</h3>
+        <p>这个页面是确定性的本地浏览器测试夹具。它只包含一份任务表单、当前操作结果和说明文字；不会读取浏览器历史、联系人或其他页面。测试填写的内容留在当前页面，并通过同源事件接口交给本地测试驱动。刷新页面会恢复初始值，不依赖登录、Cookie 或持久化浏览器存储。</p>
+        <p>This fixture presents a small, repeatable task editor. All controls are ordinary HTML inputs, a textarea, and buttons with explicit accessible names. The reference section stays visible so an accessibility observation contains useful unchanged context as well as the changing form. There are no embedded frames, canvas controls, remote scripts, or external assets.</p>
+
+        <h3>2. 输入与保存 / Editing and saving</h3>
+        <p>先在“任务标题”填写本轮测试使用的标题，再在“任务备注”填写可识别的备注。修改输入框只改变草稿，不会增加保存版本，也不会发送事件。激活“保存任务”后，页面会把两个输入值复制到结果区域，将版本加一，并发送一条保存回执。结果区域展示的是那次保存时的值，之后继续编辑草稿不会覆盖既有结果。</p>
+        <p>A save captures the title and note at the moment the form is submitted. The revision starts at zero and increases by exactly one for each save. The visible JSON result includes the run token, action name, revision, and captured values. A browser automation test should compare both fields and the revision, rather than interpreting an unchanged button or a successful input dispatch as proof of completion.</p>
+
+        <h3>3. 重置与重复测量 / Resetting a run</h3>
+        <p>“重置测试”会恢复固定标题与备注，把版本设回零，并更新结果区域。重置同样会发送一条事件回执，因此测试驱动可以确认两组测量确实从相同状态开始。事件序号在页面生命周期内递增，重置不会清零该序号；这样，即使版本再次变为零，也可以区分不同的重置操作。</p>
+        <p>Use reset before each paired measurement. The default values are identical for every run token, while the document title identifies the individual run. The reset operation does not reload or navigate the page. It preserves the same form controls and reference text, giving a benchmark a stable starting point without introducing network loading time or a second document.</p>
+
+        <h3>4. 观测与确认 / Observation and verification</h3>
+        <p>测试应先确认窗口标题包含本轮运行标识，再读取表单控件。每次会改变页面的操作之后，都需要重新观测，确认实际状态。控件名称用来定位目标，控件标识和快照用来约束本次操作；历史记录中的名称或坐标不能代替新鲜观测。若浏览器尚未提供完整辅助功能树，应报告该限制，而不是推断表单已经保存。</p>
+        <p>The page exposes a labelled revision output and a live action-status message. These are independent observations of the displayed state. The server receipt provides another check: a save must report the same run token, revision, title, and note as the visible result. Input values alone show that a draft was edited; they do not demonstrate that the save handler ran.</p>
+
+        <h3>5. 完整与增量结果 / Full and delta observations</h3>
+        <p>完整观测适合建立页面上下文，增量观测适合描述小范围更新。一次保存只需要改变结果、版本和回执状态，说明文字保持不变。比较两种观测时，应使用相同的任务内容和重置步骤，同时记录传输字节数、观察耗时和最终结果。响应较短只能证明传输内容减少，不能单独证明操作成功或整个流程更快。</p>
+        <p>Keep the observation workload comparable. A useful measurement records how many nodes were returned, whether the tree was complete, and how much serialized data crossed the interface. A delta response should still provide fresh identifiers for the current snapshot. The unchanged reference text is normal explanatory content, so the comparison includes realistic context instead of repeated filler or hidden padding.</p>
+
+        <h3>6. 回执协议与故障 / Receipts and failure cases</h3>
+        <p>页面只在实际保存或重置时向同源的“/events”发送 JSON。每条回执包含动作名称、运行标识、事件序号、版本、标题和备注。请求按动作顺序发送，不自动重试；本地服务不可用时，页面保留已发生的结果，并在回执状态中显示失败。测试驱动应把“界面已更新”和“服务已记录”分别核对，避免把网络失败误认为按钮没有生效。</p>
+        <p>The local HTTP server should accept a POST to /events and return a successful status after recording the JSON body. An empty 204 response is sufficient. A failed response leaves the captured form result intact and shows a receipt error. The driver can group events by run_token and order them by event_sequence, then verify that each intended operation produced exactly one matching receipt.</p>
+
+        <h3>7. 测试数据约定 / Test data conventions</h3>
+        <p>请使用专门生成的测试文本，例如带有本轮编号的中文标题、英文备注或两者组合。测试内容不需要真实姓名、密码或业务资料。标题与备注允许普通 Unicode 字符，结果通过文本节点显示，不把输入解释为 HTML。这样既能检查中文和多语言输入，也能保持测试结果可读、可比较、可清理。</p>
+        <p>A run token may be supplied with the run or run_token query parameter, or in a /runs/TOKEN/ path. The token appears in the document title and every event receipt. The fixture never treats the token as executable code or a network address. Use a fresh token when a test needs independent evidence, and reuse the same token only when intentionally continuing the same browser run.</p>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        "use strict";
+        const defaults = Object.freeze({
+          title: "示例任务 / Example task",
+          note: "这是一条本地测试备注。This note belongs only to the browser fixture."
+        });
+        const address = new URL(window.location.href);
+        const pathMatch = address.pathname.match(/\/runs\/([^/]+)(?:\/|$)/);
+        let pathToken = "";
+        if (pathMatch) {
+          try { pathToken = decodeURIComponent(pathMatch[1]); }
+          catch { pathToken = pathMatch[1]; }
+        }
+        const runToken = (address.searchParams.get("run") || address.searchParams.get("run_token") || pathToken || "default").slice(0, 128);
+        document.title = `DeskLoom Browser Lab · ${runToken}`;
+        document.getElementById("run-token").textContent = runToken;
+
+        const form = document.getElementById("task-form");
+        const titleInput = document.getElementById("task-title");
+        const noteInput = document.getElementById("task-note");
+        const resultSection = document.getElementById("result-section");
+        const resultOutput = document.getElementById("result-json");
+        const revisionOutput = document.getElementById("revision-output");
+        const actionStatus = document.getElementById("action-status");
+        const receiptStatus = document.getElementById("receipt-status");
+        let revision = 0;
+        let eventSequence = 0;
+        let receiptQueue = Promise.resolve();
+
+        function displayResult(record) {
+          revisionOutput.value = String(record.revision);
+          resultSection.dataset.revision = String(record.revision);
+          resultSection.dataset.title = record.title;
+          resultSection.dataset.note = record.note;
+          resultSection.dataset.event = record.event;
+          resultOutput.textContent = JSON.stringify(record, null, 2);
+        }
+
+        function recordAction(action, browserEvent) {
+          const record = Object.freeze({
+            event: action,
+            run_token: runToken,
+            event_sequence: ++eventSequence,
+            revision,
+            title: titleInput.value,
+            note: noteInput.value,
+            trusted: browserEvent.isTrusted
+          });
+          displayResult(record);
+          actionStatus.textContent = action === "save"
+            ? `状态：已保存 / Saved · 版本 ${revision}`
+            : "状态：已重置 / Reset · 版本 0";
+          receiptStatus.textContent = `事件回执：发送中 / Sending · ${record.event_sequence}`;
+          receiptQueue = receiptQueue.then(async () => {
+            try {
+              const response = await fetch("/events", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                cache: "no-store",
+                body: JSON.stringify(record)
+              });
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              if (eventSequence === record.event_sequence) {
+                receiptStatus.textContent = `事件回执：已记录 / Recorded · ${record.event_sequence}`;
+              }
+            } catch (error) {
+              if (eventSequence === record.event_sequence) {
+                receiptStatus.textContent = `事件回执：失败 / Failed · ${record.event_sequence} · ${error.message}`;
+              }
+            }
+          });
+        }
+
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          revision += 1;
+          recordAction("save", event);
+        });
+        document.getElementById("reset-test").addEventListener("click", (event) => {
+          titleInput.value = defaults.title;
+          noteInput.value = defaults.note;
+          revision = 0;
+          recordAction("reset", event);
+        });
+
+        // Initial rendering is not an action and must produce no server receipt.
+        titleInput.value = defaults.title;
+        noteInput.value = defaults.note;
+        displayResult({ event: "initial", run_token: runToken, event_sequence: 0,
+          revision: 0, title: defaults.title, note: defaults.note });
+      })();
+    </script>
+  </body>
+</html>

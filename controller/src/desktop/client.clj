@@ -20,7 +20,8 @@
 (defn connect
   "Read the native app's private endpoint file. The token is never logged."
   ([] (connect (endpoint-path)))
-  ([path]
+  ([path] (connect path nil))
+  ([path http]
    (when-not (.isFile (io/file path))
      (throw (ex-info "DeskLoom endpoint missing; run 'dlm open' first."
                      {:code :endpoint-missing :path path})))
@@ -30,7 +31,9 @@
        (throw (ex-info "Unsupported or malformed native endpoint" {:code :endpoint-invalid})))
      {:uri (URI/create (str "http://127.0.0.1:" port "/rpc"))
       :token token
-      :http (-> (HttpClient/newBuilder) (.connectTimeout (Duration/ofSeconds 3)) .build)})))
+      :http (or http (-> (HttpClient/newBuilder) (.connectTimeout (Duration/ofSeconds 3)) .build))})))
+
+(defn connect-default [http] (connect (endpoint-path) http))
 
 (defn rpc!
   "One request, no automatic retries. Mutations may have succeeded even on timeout."
@@ -48,5 +51,7 @@
      (if (and (= 200 (.statusCode response)) (true? (:ok body)))
        (:result body)
        (throw (ex-info (or (get-in body [:error :message]) "Native request failed")
-                       {:code (get-in body [:error :code])
-                        :http-status (.statusCode response) :method (name method)}))))))
+                       (cond-> {:code (get-in body [:error :code])
+                                :http-status (.statusCode response) :method (name method)}
+                         (get-in body [:error :details])
+                         (assoc :details (get-in body [:error :details])))))))))

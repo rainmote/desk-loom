@@ -67,7 +67,7 @@ class CLI(unittest.TestCase):
                  ("icon_settings", {}, ["icon"]),
                  ("icon_settings", {"selected_icon": "D"}, ["icon", "d"]),
                  ("menu_action", {"action": "update"}, ["update"]),
-                 ("observe", {"label": "中文"}, ["rpc", "observe", '{"label":"中文"}'])]
+                 ("computer_observe", {"session_id": "中文"}, ["rpc", "computer_observe", '{"session_id":"中文"}'])]
         for method, params, arguments in cases:
             with self.subTest(command=arguments):
                 result = self.run_cli(*arguments)
@@ -94,7 +94,7 @@ class CLI(unittest.TestCase):
 
     def test_errors_are_nonzero_and_not_retried(self):
         self.response = {"ok": False, "error": {"code": "busy", "message": "busy"}}
-        result = self.run_cli("rpc", "start")
+        result = self.run_cli("rpc", "computer_attach")
         self.assertEqual(1, result.returncode)
         self.assertEqual(1, len(self.requests))
         self.response = {"ok": True, "result": {"accepted": False}}
@@ -110,7 +110,7 @@ class CLI(unittest.TestCase):
 
     def test_help_and_invalid_params_do_not_connect(self):
         self.assertEqual(0, self.run_cli("--help").returncode)
-        for arguments in [("rpc", "start", "[]"), ("rpc", "start", "{"), ("icon", "X")]:
+        for arguments in [("rpc", "computer_attach", "[]"), ("rpc", "computer_attach", "{"), ("icon", "X")]:
             self.assertNotEqual(0, self.run_cli(*arguments).returncode)
         self.endpoint.unlink()
         result = self.run_cli("status")
@@ -148,6 +148,55 @@ class CLI(unittest.TestCase):
         result = self.run_cli("repl", script=symlink)
         self.assertEqual(1, result.returncode)
         self.assertIn("source project is missing", result.stderr)
+
+    def test_bridge_commands_forward_paths_as_individual_arguments(self):
+        resources = self.root / "Bridge.app/Contents/Resources"
+        resources.mkdir(parents=True)
+        for filename in ("dlm", "rpc.py"):
+            shutil.copy2(PROJECT / "scripts" / filename, resources / filename)
+        source = self.root / "source with spaces"
+        (source / "scripts").mkdir(parents=True)
+        clojure = source / "scripts/clj"
+        clojure.write_text("#!" + sys.executable + "\n"
+                           "import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+        clojure.chmod(0o755)
+        (resources / "BuildConfiguration.json").write_text(json.dumps({"sourceDirectory": str(source)}))
+        executable = resources / "dlm"
+        database = str(self.root / "中文 local database")
+        endpoint = str(self.root / "private endpoint.json")
+        for command, expected in [("mcp", ["-M:xtdb:mcp"]),
+                                  ("agent", ["-M:xtdb:mcp", "--jsonl"])]:
+            with self.subTest(command=command):
+                result = self.run_cli(command, "--endpoint", endpoint,
+                                      "--db-path", database, script=executable)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(expected + ["--db-path", database, "--endpoint", endpoint],
+                                 json.loads(result.stdout))
+        self.assertEqual([], self.requests)
+        self.assertFalse((resources / "__pycache__").exists())
+
+    def test_llm_accepts_repeated_windows_and_preserves_legacy_pair(self):
+        resources = self.root / "LLM.app/Contents/Resources"
+        resources.mkdir(parents=True)
+        for filename in ("dlm", "rpc.py"):
+            shutil.copy2(PROJECT / "scripts" / filename, resources / filename)
+        (resources / "llm.py").write_text("import json\ndef main(args, path):\n print(json.dumps(vars(args)))\n return 0\n")
+        result = self.run_cli("llm", "run", "--window", "42:source-id", "--window", "43:destination-id",
+                              "--prompt-stdin", "--json", script=resources / "dlm")
+        self.assertEqual(0, result.returncode, result.stderr)
+        parsed = json.loads(result.stdout)
+        self.assertEqual(["42:source-id", "43:destination-id"], parsed["window"])
+        self.assertIsNone(parsed["pid"])
+        self.assertIsNone(parsed["window_id"])
+        self.assertTrue(parsed["prompt_stdin"])
+        result = self.run_cli("llm", "run", "--pid", "42", "--window-id", "source-id", "--prompt", "Task",
+                              script=resources / "dlm")
+        self.assertEqual(0, result.returncode, result.stderr)
+        parsed = json.loads(result.stdout)
+        self.assertEqual(42, parsed["pid"])
+        self.assertEqual("source-id", parsed["window_id"])
+        self.assertIsNone(parsed["window"])
+        self.assertEqual([], self.requests)
 
 
 if __name__ == "__main__":

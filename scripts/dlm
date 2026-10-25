@@ -42,7 +42,29 @@ def parser():
     icon = commands.add_parser("icon", help="Read or change the persisted C / D icon")
     icon.add_argument("selection", nargs="?", type=str.upper, choices=["C", "D"])
     commands.add_parser("repl", help="Start the project's Clojure + XTDB REPL")
+    for name, help_text in (("mcp", "Serve computer-use tools over MCP stdio"),
+                            ("agent", "Serve computer-use tools over JSON lines")):
+        bridge = commands.add_parser(name, help=help_text)
+        bridge.add_argument("--db-path", help="Local XTDB directory (one active owner)")
+        bridge.add_argument("--endpoint", help="Native endpoint.json path")
     commands.add_parser("update", help="Ask the running app to build, install and restart from local source")
+    llm = commands.add_parser("llm", help="Use local Codex ChatGPT sign-in to coordinate selected windows")
+    llm_commands = llm.add_subparsers(dest="llm_command", required=True)
+    llm_commands.add_parser("status", help="Read local Codex authentication status without accessing tokens")
+    llm_commands.add_parser("login", help="Sign in with ChatGPT using Codex's browser flow")
+    run = llm_commands.add_parser("run", help="Run a bounded LLM task across 1–8 explicitly selected windows")
+    run.add_argument("--window", action="append", metavar="PID:WINDOW_ID", help="Select a window; repeat for up to 8 windows")
+    run.add_argument("--pid", type=int, help="Legacy single-window process ID (use with --window-id)")
+    run.add_argument("--window-id", help="Legacy single-window ID (use with --pid)")
+    prompt = run.add_mutually_exclusive_group(required=True)
+    prompt.add_argument("--prompt")
+    prompt.add_argument("--prompt-stdin", action="store_true", help="Read the task from stdin; avoids exposing it in process arguments")
+    run.add_argument("--model", help="Optional model supported by the local Codex account")
+    run.add_argument("--max-steps", type=int, default=12)
+    run.add_argument("--timeout", type=int, default=600, help="Total task timeout in seconds (30–1800)")
+    run.add_argument("--json", action="store_true", help="Stream JSONL status, tool and completion events")
+    run.add_argument("--db-path", help="Local XTDB directory (one active owner)")
+    run.add_argument("--endpoint", help="Native endpoint.json path")
     raw = commands.add_parser("rpc", help="Send one authenticated native RPC, with no automatic retries")
     raw.add_argument("method")
     raw.add_argument("params", nargs="?", default="{}", metavar="JSON_PARAMS")
@@ -56,6 +78,9 @@ def main(argv=None):
         arguments.print_help()
         return 0
     try:
+        if args.command == "llm":
+            import llm
+            return llm.main(args, pathlib.Path(__file__).resolve())
         if args.command == "open":
             if not APPLICATION.is_dir():
                 raise rpc.RPCError("DeskLoom is not installed. Run 'bash scripts/build-native.sh' in its source project.")
@@ -64,6 +89,15 @@ def main(argv=None):
         if args.command == "repl":
             command = str(source_directory() / "scripts/clj")
             os.execv(command, [command, "-M:xtdb:repl"])
+        if args.command in ("mcp", "agent"):
+            command = str(source_directory() / "scripts/clj")
+            launch = [command, "-M:xtdb:mcp"]
+            if args.command == "agent":
+                launch.append("--jsonl")
+            for name in ("db_path", "endpoint"):
+                if getattr(args, name):
+                    launch.extend(["--" + name.replace("_", "-"), getattr(args, name)])
+            os.execv(command, launch)
         method, params = {
             "status": ("status", {}),
             "settings": ("show_settings", {}),

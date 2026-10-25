@@ -29,7 +29,7 @@
          lock (try (.tryLock channel) (catch OverlappingFileLockException _ nil))]
      (when-not lock
        (.close channel) (.close file)
-       (throw (ex-info "XTDB directory is already in use; close the other REPL/demo first."
+       (throw (ex-info "XTDB directory is already in use; close the other controller or agent first."
                        {:code :database-in-use :path path})))
      (try
        (->Store (let [config (xtn/->config

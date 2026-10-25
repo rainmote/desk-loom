@@ -13,5 +13,5 @@
                     "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn"
                     "-Xmx768m" "-XX:MaxDirectMemorySize=256m"]}
   :repl {:main-opts ["-e" "(require '[desktop.core :as desktop] '[desktop.db :as db])" "-r"]}
-  :demo {:main-opts ["-m" "desktop.demo"]}
+  :mcp {:main-opts ["-m" "desktop.mcp"]}
   :test {:extra-paths ["test"] :main-opts ["-m" "desktop.test-runner"]}}}

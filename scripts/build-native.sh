@@ -40,14 +40,18 @@ PY
 )"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 bash "$project_dir/scripts/build-icons.sh" "$app_dir/Contents/Resources"
-cp -X "$project_dir/scripts/dlm" "$project_dir/scripts/rpc.py" "$app_dir/Contents/Resources/"
+cp -X "$project_dir/scripts/dlm" "$project_dir/scripts/rpc.py" "$project_dir/scripts/llm.py" "$app_dir/Contents/Resources/"
 cp -X "$project_dir/references/permissionflow/LICENSE" "$app_dir/Contents/Resources/PermissionFlow-LICENSE.txt"
 chmod 755 "$app_dir/Contents/Resources/dlm"
 python3 - "$project_dir" "$app_dir/Contents/Resources/BuildConfiguration.json" <<'PY'
 import json, pathlib, sys
 pathlib.Path(sys.argv[2]).write_text(json.dumps({'sourceDirectory': sys.argv[1], 'pythonExecutable': sys.executable}))
 PY
-xcrun swiftc -swift-version 5 -O -g \
+mkdir -p "$project_dir/.build/compiler-temp" "$project_dir/.build/swift-module-cache"
+# Keep large compiler caches on the project volume; only the signed bundle
+# needs local staging to avoid network-volume AppleDouble resources.
+TMPDIR="$project_dir/.build/compiler-temp" xcrun swiftc -swift-version 5 -O -g \
+  -module-cache-path "$project_dir/.build/swift-module-cache" \
   "$project_dir"/native/Sources/*.swift \
   -framework AppKit -framework SwiftUI -framework ApplicationServices \
   -framework ScreenCaptureKit -framework Network -framework CryptoKit \
@@ -63,13 +67,13 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>DeskLoom</string>
 <key>CFBundleExecutable</key><string>DeskLoom</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>12</string>
-<key>CFBundleShortVersionString</key><string>0.7.3</string>
+<key>CFBundleVersion</key><string>17</string>
+<key>CFBundleShortVersionString</key><string>0.11.0</string>
 <key>CFBundleIconFile</key><string>DeskLoomIconC</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
-<key>NSScreenCaptureUsageDescription</key><string>显示当前 TextEdit 测试窗口的实时缩略图。</string>
+<key>NSScreenCaptureUsageDescription</key><string>为本地电脑控制捕获当前明确选择的应用窗口。</string>
 </dict></plist>
 PLIST
 python3 - "$app_dir/Contents/Info.plist" <<'PY'

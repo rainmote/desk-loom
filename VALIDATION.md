@@ -4,7 +4,117 @@ created: 2026-10-23
 
 # 原型验收状态
 
-当前状态：**可编译运行，独立数据/RPC测试通过；真实桌面闭环等待 macOS 系统授权。尚未完成目标验收。**
+当前状态（2026-10-26）：**v0.11.0 build 17 已安装，通用多窗口控制没有应用名称或 Bundle ID 白名单；菜单栏仅显示图标及实际连接数。跨应用真实填写和独立菜单计数已取得证据，但修复后的完整 LLM 验收仍受本机存储与共享目录读取故障阻塞，不能宣称整轮通过。** 原有截图和 XTDB 功能保留。实际控件能力取决于 macOS Accessibility 支持；macOS 之外的后端未实现。下方早期记录保留为历史，旧版本的专用流程现已移除。
+
+文件整理说明：旧版 `tests/` 下的日志、截图及诊断输出已清理，历史记录中的这些路径不再保留。当前 `evidence/` 验收证据和运行依赖留在本地忽略目录，不纳入 Git；源码、可重复执行的测试及夹具均保留。
+
+## 2026-10-26 两个真实应用的跨窗口验收
+
+- 新增 `tests/cross_app_acceptance.py --live`，使用 Google Chrome（`com.google.Chrome`）和 Microsoft Edge（`com.microsoft.edgemac`）的两个独立临时配置与本地表单。核对不同 PID、Bundle ID、窗口 ID；随机源值通过 AX 写入，明确断言任务提示和参数中不含该值。模型复用本机 ChatGPT 订阅，要求从 Chrome 读取备注并填写 Edge、追加固定后缀，源内容和标题保持不变。`--dlm` 可指定安装包内 CLI。
+- 真实模型已执行一次目标 `set_value`，回执为 `dispatched`，模型运行时实际控制数为 2：`evidence/cross-app-a5c3b54875114456adb54eb1ebf7436d/llm-events.json`。持久化窗口版本确认源备注未变，目标精确等于源值加 `｜跨应用协作完成`；模型完成检查因状态变化停止，该轮仍判失败。诊断对原数据库副本执行，只读核对原库 SHA 未变，详见同目录 `diagnostic-analysis.md`、`diagnostic-aligned-diff.json`。
+- 差异为两窗口 `AXFullScreenButton` 下各消失一个临时空 `AXGroup`：Chrome 119 → 118 节点、Edge 127 → 126 节点。对齐删除节点后其余持久化语义完全相同；原始最终全量快照没有保留，不能排除未入库几何等字段同时变化，但该节点消失本身足以触发严格比较。
+- 修复通用完成确认：全部所选窗口身份不变、前后观察均完整时，若语义变化，仅以新观察重新规划，计入原步骤和时间上限；稳定前不展示模型的完成消息。保留全部比较字段，动作派发前的源/目标检查、未知结果不重试均不变，没有应用专属例外。Python LLM **36 项测试通过**，包括 `dispatched` 后不重复操作、持续变化的步骤/时间上限、会话/窗口变化和不完整观察拒绝。独立代码复审通过。
+- build 17 已完整构建、固定身份签名安装至 `/Applications/DeskLoom.app`，designated requirement 不变，无障碍与屏幕录制均保持 true；安装包 LLM 脚本 SHA 与源码一致。安装日志保存于 `evidence/cross-app-455173b2985d47b09e48e4d3bbc4fd1e/build-install.log`。
+- **菜单计数独立验证通过：2 → 1 → 0**，图标显示、缩略图隐藏，UI 数值与原生实际会话数一致。该项仅连接和释放现有 Chrome、Edge 窗口，不读取页面内容、不发送输入、不运行模型。证据：`evidence/cross-app-menu-f3f94850a6e74a1d808ec1af7325e249/result.json`。最终受控窗口数为 0；所有本轮临时浏览器进程均已关闭。
+- 修复后的整轮复测尚未通过。安装版 CLI 最新证据：`evidence/cross-app-455173b2985d47b09e48e4d3bbc4fd1e/result.json`，连接阶段 `operation-failed`，尚未调用模型；同时原生保存 `inspector.png` 明确报本地系统盘空间不足，独立诊断文件创建也返回 `ENOSPC`。另观察到 NFS 生成缓存及源码间歇 `EACCES`；不可读生成缓存已隔离，未改共享权限。早期 agent EOF 的 stderr 未保存，不能据此确认其具体根因。无窗口服务/数据库 readiness 曾成功，不替代实际跨应用验收。等待释放足够本地磁盘空间、共享目录稳定可读后再复测。
+- 测试脚本已修正浏览器异步写值的验收：允许 `dispatched` 后仅有界读回精确值，保留原请求和回执，不重发动作。失败后也尝试保存独立读回和窗口截图；未保存/重置同时检查 AX 内同步结果 JSON 与服务端事件。NFS 临时浏览器配置启动超时的残留仅归档到忽略目录，详见 `evidence/cross-app-75278f43f47446ea9161b98013389dec/cleanup-diagnostic.json`。
+
+## 2026-10-25 移除专用编辑器流程
+
+- 删除 `DesktopEngine.swift`、旧演示与专属验收流程；权限引导、焦点诊断和 UI/菜单路由拆入通用 `DesktopServices.swift`。状态、控制会话、截图和停止统一由 `ComputerCoordinator` 管理。空闲界面改为「刷新应用窗口」，不再默认显示或自动启动某个编辑器。
+- 旧 `start`、`observe`、`set_value`、`move_window`、`verify`、`report_verification_error`、`preview` RPC 全部返回 `unknown-method`。控制统一使用 `computer_*`；REPL 的 `attach!` 必须明确指定窗口，后续操作指定会话。旧持久化记录仅保留只读审计，新通用记录按各自的动作与回执审计。
+- v0.11.0（build 16）已签名安装至 `/Applications/DeskLoom.app`，代码身份不变，两项系统权限安装前后保持 true。实际 MCP 握手返回 `deskloom / 0.11.0`，本机 ChatGPT 登录复用仍有效。
+- 全体 Swift 源编译检查与两套原生单元程序通过；真实原生 RPC **6 项**（含全部 7 个旧方法拒绝、伪造会话拒绝）、Python CLI **9 项**通过。原样 `scripts/clj-test` 通过 **36 tests / 274 assertions**，独立 JVM 持久化写入/读回通过；计数变化来自删除旧专属验收测试并新增通用 REPL、审计测试。
+- NFS 的两份不可读生成缓存已移至 `.runtime/cache-recovery/`，重新生成后，正常 CLI/MCP 和完整测试入口恢复；未修改共享权限或减少测试范围。
+- 验收改用 `tests/fixtures/WindowLab.swift` 的独立 AppKit 应用，只有内存文本和两个自有窗口。首次模型测试因全屏按钮下的暂态 `AXGroup` 消失而在派发前停止；精确差异保存在 `evidence/windowlab-diff-472f3cf1304a453abeca165d97dfdde2/difference.json`。测试夹具隐藏不参与验收的全屏/缩放按钮后，两窗口连续 34 秒、各 6 次完整观察均为相同的 7 节点（`evidence/windowlab-stable-b919d14e9f8548d3a1728b37ec91c83b/`）；产品状态校验未放宽。
+- 修复后的真实订阅协作通过：`evidence/multiwindow-384f4b20400b481daa1d4ee5fcfc9fbb/result.json`。模型读取随机源正文，将其写入另一个 WindowLab 窗口并追加指定后缀，独立 AX 读回确认源未变、目标精确匹配；LLM 阶段 31.50 秒。当时已有其他客户端的 1 个会话，菜单实际为 **3 → 2 → 1**，本测试所属会话为 **2 → 1 → 0**；其他会话保留，跨窗口使用快照的负向检查通过。
+
+- 通用接口闭环通过：`evidence/computer-59a1bd6aab9041fa84bc6222dd914873/result.json`，覆盖 3 次原生验证写入、请求重放不派发、batch、delta、560 × 472 真实窗口截图、独立 JVM 恢复页面记忆。已视觉检查截图。另一个 JVM 审计返回 `format=computer-agent`、`outcome=verified`，结果保存在同目录 `audit.json`。两个验收均释放自身会话并关闭测试应用，原有其他客户端会话保留。
+
+## 2026-10-25 多窗口 LLM 协作
+
+- v0.10.0（build 15）已构建、签名并安装至 `/Applications/DeskLoom.app`。固定签名要求保持不变，无障碍与屏幕录制授权安装前后均为 true；安装包中的 LLM 脚本与当前源码一致。MCP 握手返回 `deskloom / 0.10.0`。
+- 界面可勾选 1–8 个窗口；CLI 支持重复 `--window PID:WINDOW_ID`。每个窗口独立维护会话、快照及动作回执；多会话工具调用需要显式 `session_id`。同一任务同时保持所有连接，键鼠操作按顺序执行。规划后重新观察所有来源及目标窗口，最后刷新即将操作的目标，避免多窗口遍历消耗其快照有效期。
+- 运行 `python3 tests/multiwindow_acceptance.py --live --with-llm`，只操作两份新建 TextEdit 测试文档。源文档预写随机校验码，任务提示只提供窗口标题、不提供校验码；真实订阅模型将观察到的源正文写入目标，并追加 `｜协作完成`。工具返回 `verified`，下一步模型观察确认完成；独立重新连接 AX 精确核对源正文未变、目标正文完全符合预期。LLM 阶段耗时 **25.70 秒**，仅代表此次样本。
+- 实测两个会话同时存在，跨窗口复用源快照向目标写入被拒绝。定向释放源窗口后目标仍可观察；菜单栏计数实际为 **2 → 1 → 0**。模型运行时另行核对计数为 2，结束后为 0。真实图标与数字渲染为 `status-two-windows.png`；布局检查的合成 AppModel 渲染单独放在 `layout-fixture/`。
+- 验收证据：`evidence/multiwindow-57de83db53714d6ba82f372fd9ab59e5/result.json`、`llm-events.json`、`ui-two-windows.json`、`final-state.json`。所有测试会话已释放，最终实际连接数为 0。
+- 回归通过：Python LLM **33 项**、CLI **9 项**、MCP **5 项**、真实原生 RPC **9 项**；Clojure **45 tests / 359 assertions**，独立 JVM 持久化写入/恢复通过。Swift 全应用构建与原生断言程序通过，覆盖关闭窗口减数、8 窗口全部停止、会话隔离、异步截图与切换、旧会话清理不影响其他控制。
+- NFS 一度拒绝读取源码，恢复后构建和实际 CLI/MCP 启动正常。完整 Clojure 测试使用等价的空 alias 绕过一个仍不可读的旧生成缓存，测试代码和配置未缩减。取消清理等待覆盖全部会话与未确认的连接；相关慢窗口、未知 attach 和重复取消回归通过。
+
+## 2026-10-25 LLM 接入与菜单栏
+
+- 使用本机 `codex-cli 0.157.1`。`dlm llm status` 与原生 `llm_status` 均确认 `available=true`、`authenticated=true`，认证类型为 ChatGPT；未读取、复制登录令牌，也未更改 Codex 全局配置。真实 `codex exec` 结构化连接检查成功。
+- 新建专用 TextEdit fixture `DeskLoom 3A658309`，通过 `dlm llm run --prompt-stdin --json` 请求写入单行中文测试文本。模型第一步选择 `set_value`，工具返回 `verified`；第二步根据读回判断完成。退出后另行连接原生 AX 精确核对，实际文本与预期一致，任务结束时已自动 detach。耗时 **33.01 秒**，包含两次模型推理与本地工具启动，仅代表该测试。证据：`evidence/llm-18fefe6658534611ad51ed09a5232620/result.json` 与同目录 `events.json`。
+- 活动会话菜单栏实测 `statusTitle="1"`、`controlledWindowCount=1`，结束后为 `"0"` / `0`；图标一直显示、缩略图不显示。菜单栏与工作台已生成并视觉检查截图，窗口及紧凑浮窗也已检查长标题、任务输入及结果区域的布局。
+- 新增 LLM 后端 **21 项测试**，覆盖登录类型区分、API Key 环境隔离、不复制凭据、标准输入传递任务、结构化协议、模型工具禁用、过期快照刷新、会话与窗口变化、唯一节点映射、坐标边界、安全字段、显式聚焦、未知结果不重试、步骤/时间上限、阻塞管道、取消子进程及重复取消信号清理。
+- 原有 Python CLI 8 项、MCP 5 项、安装器 14 项、更新器 4 项、存储迁移 4 项通过；真实原生 RPC 9 项通过。Clojure **34 tests / 288 assertions** 通过，独立 JVM 持久化写入/恢复通过；Swift 全项目编译检查及 ComputerEngine 单元测试通过。
+- 取消在原生端幂等处理；工作进程忽略重复取消信号直至清理结束。原生释放窗口时同步核对本任务记录的会话，Clojure detach/退出通过 `session_id` 原子校验，避免在并发会话更换后释放其他客户端的窗口。
+- 构建安装到 `/Applications/DeskLoom.app`，版本 0.9.0（build 14）；签名 designated requirement 不变，无障碍与屏幕录制授权安装前后均保持 true。网页登录新账号流程未实际注销重登；复用已有本地 ChatGPT 登录已实测。
+
+## 2026-10-25 截图匹配拒绝修复
+
+- 生产进程内诊断复现了标题表示差异：AX 返回完整页面标题及 ` - Google Chrome`，SC 有时返回单个中间省略号 `…`（U+2026）。修复前固定计划为 3 次独立 Chrome 启动、每次 7 张，共 21 张：7 成功、14 次 `ambiguous-capture`。14 次失败都只有一个同 PID 几何候选，四项边界差值均为 0；AX 前后标题/边界不变且读取错误均为 0，标题匹配数却为 0。诊断标题自身没有被日志截断。证据：`evidence/screenshots-268293ad430d4b0c94df03d6f5431eab/result.json`。
+- 代表性原始值：AX 为 `DeskLoom Browser Lab · 21cad08262a0410e9a499e3194cd02ae - Google Chrome`，SC 为 `DeskLoom Browser Lab · 21ca…8262a0410e9a499e3194cd02ae`。这组复现定位到中间省略形式无法匹配，不支持用失焦或坐标变化解释这些拒绝。
+- 新增严格的中间省略匹配：仅一个内部 U+2026，两端精确对应，完整标题更长且不含字面 U+2026；同进程全部 SC 几何候选及完整可读的 AX 几何候选都必须唯一，AX 候选须为当前已连接对象。完整标题与省略标题同时匹配时仍拒绝，已绑定的 CGWindowID 不允许换绑；查询前后及截图后再次验证 AX 状态。没有截图重试、任意前缀匹配或选择首个候选。成功结果增加 `capture_match`；失败诊断经原生 RPC、MCP 和 JSON Lines 保留。
+- 该关联使用应用与系统公开的元数据，并非系统提供的 AX ↔ CG 身份映射。存在歧义、枚举不完整、窗口状态变化时仍会拒绝。
+- 已构建安装至 `/Applications/DeskLoom.app`（2026-10-25 11:37 +08）。固定签名要求保持不变，无障碍及屏幕录制权限安装前后均为 true。原生单测及全部 Swift typecheck 通过，包含生产标题、Unicode 边界、同位置多窗口、AX 读取失败、完整/省略候选混合、已绑定窗口编号变化等负向情况；独立代码审查发现的混合候选误选风险已修正。错误诊断透传的实际 MCP/JSONL 进程测试通过；本轮 Clojure 32 tests / 275 assertions、Python MCP 5 项、原生 RPC 9 项均通过。
+- 修复后运行 `python3 tests/screenshot_acceptance.py --live`：预先固定 3 次独立 Chrome 启动 × 7 张，覆盖启动后、真实保存后、720/1100 两种截图宽度及连续截图。**21/21 通过，失败 0、未执行 0、截图重试 0**；7 张为 `application_suffix`、14 张实际走 `middle_ellipsis`。每张均校验 PNG、SHA256、尺寸、会话/窗口/进程、URL、坐标比例及绑定 CGWindowID，省略路径的 SC/AX 候选数均为 1。已视觉检查长标题保存后截图。证据：`evidence/screenshots-3de3875961074da6914a4ee41b79f952/result.json`；此固定样本结果不代表所有应用、窗口变化或多屏场景。
+
+- 回归中另保留了两个页面状态时序失败：`browser-abb4054578ff48c89702714a6196db4a` 在异步回执 DOM 替换时读到不完整 AX 树；`browser-f1894e44903d458fab41cf4415eca89b` 的重置返回仍为 `Sending · 3`，约 77 微秒后立即发起下一批次，首步因 `incomplete-snapshot` 停止、完成数为 0，没有重发。后者内部预观察未附在错误回执中，不能断言具体失效节点。验收脚本现仅通过有界只读观察等待完整的当前事件回执；重置前等待上一保存回执、重置后等待当前 `Reset` 与 `Recorded`，再校验字段。重置及其就绪等待单独记录在计时外；被测动作仍要求完整观察，原始不完整样本和失败运行都保留。
+
+### 修复后的完整浏览器、XTDB 与加速回归
+
+- 最终运行：`python3 tests/browser_acceptance.py --live`，证据 `evidence/browser-db9e81336ced442286682b50cb71de65/result.json`，`outcome: passed`。实际 Codex app-server 读取已注册的 DeskLoom MCP，服务为 `connected`、11 个工具、无工具错误。全过程经 MCP 与原生 AX 操作独立 Chrome profile 的回环测试页；无 DevTools 或 DOM 注入。首次新鲜节点保存、召回页面选择器后的第二次保存，以及 5 组配对测量共完成 **12 次真实保存、12 次重置**，可信浏览器事件序号连续 1–24，没有重复动作。
+- 页面 ID：`page-e13e341d9ac7ce919e9c4c6d8bdddcbcfe3b2c26cc3d524021a4c17a0c832180`。关闭 MCP 后，独立 JVM 重开默认 `~/Library/Application Support/DeskLoom/xtdb`，恢复该页 **74 个内容版本、150 次访问**。`page_id/version_id/content_hash/visit_count`、标题/备注、页面 URL 和最后事件 24 精确一致，搜索可找到，历史内容无可执行节点句柄；详见同目录 `xtdb-reopened.json`。这是持久版本/访问计数，不是浏览器保存动作次数。
+- 最终目标窗口截图 `browser.png` 为 1100 × 900，SHA256 为 `96d8509c276924b2a506238e6a92d1e7ef8c432f9df4750f1687211d4794437d`；已验证 PNG、目标身份和实际画面。该次同样走 `middle_ellipsis`，SC/AX 几何候选均为 1、已选 AX 对象确认成功，CGWindowID 为 25427。
+
+| 本轮 5 组暖进程配对测量 | 逐步 / 完整 | 批量 / 增量 | 结果 |
+| --- | ---: | ---: | --- |
+| 相同三步表单流程中位耗时 | 505.20 ms | 426.02 ms | 减少 15.7% |
+| 每次流程外层工具调用 | 3 | 1 | 原生动作均为 3 次 |
+| 每次流程响应字节中位数 | 286,783 | 96,973 | 减少 66.2% |
+| 稳定页观察响应字节中位数 | 94,863 | 6,678 | 减少 93.0% |
+| 稳定页观察往返中位耗时 | 83.36 ms | 50.79 ms | 含本地传输、序列化与解析 |
+
+- 各组使用同页面、相同输入和语义选择器，交替执行次序；全部 5 组计入统计。重置及前后回执就绪等待在计时外并单独记录，业务保存事件及可见保存结果验证在计时内，并核对返回字段值。完整树为 119 节点，5 组 delta 均无变更节点、内容版本复用，访问继续增长。响应字节包含 MCP text/structuredContent 重复编码；协议日志计时后写盘。
+- 冷阶段单列：Codex runtime 1.27 秒，首个能力调用 1.17 秒，首次 attach 与打开 XTDB 4.54 秒。首次新鲜节点保存为 401.10 ms，第二次记忆选择器批次为 487.35 ms；两次输入/路径不同，搜索召回在计时外，**不能据此声称记忆本身让第二次更快**。可比较的加速证据来自上述配对实验。delta 仍执行完整原生观察和持久化；以上均不含 LLM 推理时间，不代表任意网站效果。
+
+- 独立证据复核将最终 wire 中 119 节点按持久化规则归一化，与重开 XTDB 的快照全对象比较一致，并重新计算得到相同内容哈希；102 个工具记录与 wire 对应、无工具错误，动作请求标识无复用。测试结束后无活动控制会话、无遗留测试 Chrome 主进程，两项权限仍有效。
+
+## 2026-10-25 Codex MCP 与真实 Chrome 验收
+
+- 全局配置 `~/.codex/config.toml` 已注册 `deskloom`，命令为 `~/.local/bin/dlm mcp`，启动超时 30 秒、工具超时 120 秒。实际安装的 Codex CLI `0.157.1` 经 app-server 临时 runtime 读取此配置，报告 `connected`、服务版本 `0.8.0`、11 个工具、`toolsError: null`；操作全部经过 `mcpServer/tool/call`。没有启动模型回合或保存新的用户聊天。
+- 可重复脚本：`python3 tests/browser_acceptance.py --live`。使用独立 Chrome profile 和回环 HTTP 测试页，通过原生 AX 填写中文标题/备注并激活保存按钮。业务成功同时检查浏览器发出的可信事件、可见结果、字段读回；没有 DevTools、DOM 注入或 Playwright。首次新鲜节点操作、从 XTDB 召回选择器后的第二次操作及 5 组配对流程，共 12 次真实保存、12 次重置，事件序号连续，动作没有重发。
+- 最终证据：`evidence/browser-1b0fbcfe15aa45b38f7cdb652da41349/result.json`，`outcome: passed`。`browser.png` 是经 Codex/DeskLoom 返回的真实目标窗口截图，1100 × 1202，SHA256 校验和视觉检查通过。该次运行仅在最终清理阶段暂留测试窗口供只读 SC/CG 对照，暂留不进入任何计时；随后已关闭。
+- 页面 ID：`page-f0b41d2646265ef2259b4e6f76760044efb47aa9a3a59494963aa4d4784c6351`。默认库 `~/Library/Application Support/DeskLoom/xtdb` 保存该页 52 个内容版本、108 次访问。关闭 MCP 后，独立 JVM 重开同一路径，精确恢复最后的 `page_id/version_id/content_hash/visit_count`、标题、备注及最后保存事件 24；搜索可找到该页，历史快照无可执行节点句柄。详见同目录 `xtdb-reopened.json`。
+
+| 5 组暖进程配对测量 | 逐步 / 完整 | 批量 / 增量 | 结果 |
+| --- | ---: | ---: | --- |
+| 相同三步表单流程中位耗时 | 422.39 ms | 395.31 ms | 本地端到端减少 6.4% |
+| 每次流程外层工具调用 | 3 | 1 | 原生动作均为 3 次 |
+| 每次流程响应字节中位数 | 288,107 | 97,415 | 减少 66.2% |
+| 稳定页观察响应字节中位数 | 95,307 | 6,692 | 减少 93.0% |
+| 稳定页观察往返中位耗时 | 66.11 ms | 43.65 ms | 包含序列化、Codex 传输与解析 |
+
+- 两种表单流程使用同一页面、相同值、同一组语义选择器，交替执行顺序，每次使用新 `request_id`。重置在计时外，业务保存事件及可见结果检查在计时内；外层响应字节包含 MCP text/structuredContent 的实际重复编码。证据协议日志和 stderr 缓存在内存，计时结束后落盘，避免 NFS 写盘污染。完整树 119 个节点，5 组 delta 均无改变节点、复用相同内容版本，访问计数继续增长。
+- 冷阶段单列：Codex 临时 runtime 启动 1.11 秒，首个能力调用 1.18 秒，首次 attach 加打开 XTDB 3.76 秒。首次实际保存 325.74 ms，记忆选择器加批次的第二次保存 426.55 ms；两次路径、输入不同，且搜索/召回在计时外，**不能据此声称页面记忆让第二次更快**。上表仅证明相同选择器流程的批次收益；delta 仍完整观察并同步持久化，不能把响应缩小等同原生 AX 加速。全部测量不包含 LLM 推理时间，也不代表任意网站性能。
+- 浏览器验收发现并修复了 Chrome AX 标题比 SC/CG 标题多出精确应用名后缀的截图适配问题；仍检查同 PID、紧几何匹配和唯一候选。另补回通用状态中的 `controller_application_path`，避免通用会话结束后更新器无法核实应用身份。原生单元测试（含 8 项标题匹配断言）、全应用构建/稳定签名安装、9 项原生契约检查通过，两项系统权限仍为 true。
+- 失败证据也保留：`browser-de4d0dc90cfd4a29972a999639f3484b` 暴露了测试未等异步回执稳定；`browser-1771988130f14a64b67c10858eff2c2c` 暴露原始标题匹配问题；修复后的 `browser-26f36b5d86c541b39e356d1b616989fd` 仍有一次 `ambiguous-capture` 拒绝，未取得当时生产进程内的候选元数据，当时原因尚未确认；本节是早期验收记录，上方新增诊断已复现并修复中间省略标题导致的同类拒绝。后续独立截图及该轮完整运行均成功；不能据此保证截图在所有窗口变化时稳定成功，也没有为通过验收而放宽唯一目标要求。
+
+## 2026-10-24 通用 Computer Use 与页面记忆
+
+- Python 自动测试：34 项通过，包含实际 MCP 子进程握手、通知静默、版本协商、错误恢复、stdout 纯协议、JSON Lines、CLI 参数转发及原安装/更新测试。
+- Clojure 自动测试：32 tests / 275 assertions，0 failures / 0 errors。包括真实 XTDB 页面去重、搜索、关闭重开、密码值脱敏，持久请求幂等、未知结果不重放、增量节点映射、批次停止和参数校验。另已运行原有两个独立 JVM 持久化脚本。
+- Swift 全应用编译、固定身份签名及原生单元测试通过；单元测试覆盖 Unicode 分块、文本预算、伪造快照、无会话隔离，不向桌面发送输入。
+- 已安装 `/Applications/DeskLoom.app` 0.8.0。安装前后无障碍、屏幕录制均为 true，designated requirement 保持不变。
+- 可重复真实验收：`python3 tests/computer_acceptance.py --live`，仅修改本次新建的 DeskLoom 文本 fixture，通过通用 JSON Lines 服务列窗口、绑定、中文写入与精确读回、相同 request_id 回执复用、两步批次、增量观察、真实窗口截图、页面召回，并在第二个独立 JVM 中再次搜索和召回。
+- 通用操作实机证据：`evidence/computer-9fae55e6f84d4e1e8daec7865d4abbae/result.json`，session `7AB5F564-7B5C-4B10-B4EA-08AAA77E3207`，三次文本动作均 `verified`；`window.png` 与返回 SHA256 一致；`independent_jvm_recovered=true`。
+- 该测试页面完整响应 10,189 字节、未变化增量响应 1,773 字节，减少 82.6%。暖进程连续五次增量观察中位数 27.75 ms（包含本地 RPC 与同步 XTDB 持久化）；两步文本批次约 248.94 ms，窗口截图约 88.73 ms。它们是指定 TextEdit 样本的局部测量，不表示所有应用或包含 LLM 推理的整体速度。
+- 页面内容保存在去重版本中；请求日志仅保存摘要、紧凑回执和版本引用。历史内容明确标为不可直接执行，操作仍重新解析当前窗口。
+
+补充状态回归：通用会话 detach 后，状态接口与菜单栏应用名称一致，session/snapshot 标识为空，角标和预览已停止；旧 fixture 状态不再混入。证据：`evidence/computer-7d79ad56a3a4414fbb6950a10a11368d/result.json`，`detached_status_matches_ui=true`。随后 9 项只读/负向原生 RPC 契约检查全部通过。
+
+当前限制：单个原生控制会话、每个 XTDB 路径一个桥接进程；标准 MCP stdio 兼容版本为 2024-11-05 至 2025-11-25，不宣称实现更新的 stateless 协议；没有多客户端共享守护进程、AXObserver 事件流或系统锁屏控制。
 
 ## 已验证
 
@@ -160,7 +270,7 @@ scripts/clj -M:xtdb -m desktop.audit SESSION_ID
 
 ## 2026-10-24：用户授权 OmniWM 局部浮动规则后的复测
 
-- 用户明确选择“仅测试窗口浮动”。已原子更新 `/Users/geb/.config/omniwm/settings.toml`，追加唯一规则 `7AFB8506-5015-40D1-8D1A-0F107B8A1A7F`：`bundleId=com.apple.TextEdit`，标题匹配 `^DeskLoom [0-9A-F]{8}(?:\.txt)?(?: —.*)?$`，`layout=float`。原有 12 条规则及其他设置保持相同；原文件备份为 `/Users/geb/.config/omniwm/settings.toml.backup-deskloom-20261024-203236`。
+- 用户明确选择“仅测试窗口浮动”。已在本机 OmniWM 配置中追加仅匹配旧测试应用及测试文档标题的浮动规则，原有规则及其他设置保持相同，并保存本地备份。该规则属于历史测试环境，不是项目运行要求。
 - 标题匹配的 10 项边界断言通过，普通 TextEdit 文档及其他应用不受影响。OmniWM 的文件监控已重新持有替换后的配置 inode；未开启 IPC 或重启窗口管理器。运行效果以下述新窗口实测为准。
 - 新建会话 `0C19F441-9720-42DD-8B3D-C506B1DC9066`：目标窗口尺寸为 `656×422`，位置 `(338,132)`，不再是原先 Niri 半屏平铺几何；中文写入与 AX 精确读回成功。
 - 从启动前至停止后共有 60 次焦点采样，前台一直为 `com.openai.codex` / PID `73620`，应用激活序号及基于 AX `CFEqual` 的焦点窗口标识保持不变，`focus_unchanged=true`。本轮解决了上节实际采样未通过的情况。

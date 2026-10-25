@@ -1,90 +1,66 @@
 (ns desktop.core-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [desktop.core :as desktop]
-            [desktop.client :as client]
+            [desktop.agent :as agent]
+            [desktop.memory :as memory]
             [desktop.db :as db]))
 
-(deftest selection-fails-closed
-  (let [field {:id "fresh/1" :role "AXTextArea" :value "original"
-               :enabled true :settable true}
-        snapshot {:snapshot_id "fresh" :complete true :nodes [field]}]
-    (is (= field (desktop/unique-text-area snapshot)))
-    (testing "incomplete, disabled or ambiguous trees cannot authorize a write"
-      (doseq [bad [(assoc snapshot :complete false)
-                   (assoc snapshot :nodes [])
-                   (assoc snapshot :nodes [field (assoc field :id "fresh/2")])
-                   (assoc-in snapshot [:nodes 0 :enabled] false)
-                   (assoc-in snapshot [:nodes 0 :settable] false)]]
-        (is (thrown? clojure.lang.ExceptionInfo (desktop/unique-text-area bad)))))))
+(deftest connection-and-enumeration-do-not-open-storage-or-control-a-window
+  (let [calls (atom [])]
+    (with-redefs [agent/native! (fn [_ method args] (swap! calls conj [method args])
+                                 {:sessions [] :windows [{:window_id "chosen" :pid 12}]})
+                  db/open! (fn [& _] (throw (Exception. "Read-only discovery must not open XTDB.")))]
+      (let [c (desktop/connect! {:endpoint "/explicit/endpoint" :db-path "/explicit/db"})]
+        (is (= "/explicit/endpoint" (get-in c [:options :endpoint])))
+        (is (= [{:window_id "chosen" :pid 12}] (:windows (desktop/windows c {:pid 12}))))
+        (is (thrown? clojure.lang.ExceptionInfo (desktop/attach! c {:bundle_id "example.app"})))
+        (is (thrown? clojure.lang.ExceptionInfo (desktop/attach! c {})))
+        (is (= [:computer_capabilities :computer_windows] (mapv first @calls)))
+        (desktop/close! c)))))
 
-(deftest failed-readback-is-recorded-and-reported-without-retrying-the-write
-  ;; This tests orchestration only; db-test and clj-test separately use real XTDB.
-  (let [snapshot {:session_id "test" :snapshot_id "fresh" :complete true
-                  :nodes [{:id "fresh/1" :role "AXTextArea" :value "old"
-                           :enabled true :settable true}]}
-        calls (atom []) events (atom [])]
-    (with-redefs [desktop/ready-snapshot! (fn [_] snapshot)
-                  desktop/verify-value! (fn [_ _ _] {:passed false :actual "old" :snapshot snapshot})
-                  db/snapshot! (fn [_ _ s] s)
-                  db/event! (fn [_ _ kind payload] (swap! events conj [kind payload]))
-                  client/rpc! (fn [_ method params]
-                                (swap! calls conj [method params])
-                                (case method :set_value {:state "unknown"}
-                                             :verify {:verified false}))]
-      (is (thrown? clojure.lang.ExceptionInfo (desktop/set-text! {:store nil :client nil} "new")))
-      (is (= [:set_value :verify] (mapv first @calls)))
-      (is (false? (get-in (last @calls) [1 :success])))
-      (is (some #(and (= :verification (first %)) (false? (get-in % [1 :passed]))) @events))
-      (is (not-any? #(= :verification-error (first %)) @events)))))
-
-(deftest verification-interruption-is-recorded-once-without-repeating-a-write
-  (doseq [stage ["read-back" "native-verification"]]
-    (testing stage
-      (let [snapshot {:session_id "test" :snapshot_id "fresh" :complete true
-                      :nodes [{:id "fresh/1" :role "AXTextArea" :value "old"
-                               :enabled true :settable true}]}
-            calls (atom []) events (atom [])
-            failure (ex-info "Target disappeared" {:code "window-not-ready"})
-            reporting-failure (ex-info "UI unavailable" {})]
-        (with-redefs [desktop/ready-snapshot! (fn [_] snapshot)
-                      desktop/verify-value! (fn [_ _ _]
-                                             (if (= stage "read-back") (throw failure)
-                                               {:passed true :actual "new" :snapshot snapshot}))
-                      db/snapshot! (fn [_ _ s] s)
-                      db/event! (fn [_ _ kind payload] (swap! events conj [kind payload]))
-                      client/rpc! (fn [_ method params]
-                                    (swap! calls conj [method params])
-                                    (case method
-                                      :set_value {:state "dispatched"}
-                                      :verify (throw failure)
-                                      :report_verification_error (throw reporting-failure)))]
-          (is (identical? failure (try (desktop/set-text! {:store nil :client nil} "new")
-                                       (catch Exception e e))))
-          (is (= (if (= stage "read-back") [:set_value :report_verification_error]
-                     [:set_value :verify :report_verification_error])
-                 (mapv first @calls)))
-          (let [errors (filter #(= :verification-error (first %)) @events)
-                payload (second (first errors))
-                request-id (get-in (first @calls) [1 :request_id])]
-            (is (= 1 (count errors)))
-            (is (= {:request_id request-id :stage stage :outcome "unknown" :retry false
-                    :message "Target disappeared" :code "window-not-ready"} payload))
-            (is (= (select-keys payload [:request_id :stage :message])
-                   (second (last @calls))))
-            (is (not-any? #(= :native-verification (first %)) @events)))
-          (is (= [reporting-failure] (vec (.getSuppressed failure)))))))))
-
-(deftest missing-native-verification-result-is-not-success
-  (let [snapshot {:session_id "test" :snapshot_id "fresh" :complete true
-                  :nodes [{:id "fresh/1" :role "AXTextArea" :value "old"
-                           :enabled true :settable true}]}
-        events (atom [])]
-    (with-redefs [desktop/ready-snapshot! (fn [_] snapshot)
-                  desktop/verify-value! (fn [_ _ _] {:passed true :actual "new" :snapshot snapshot})
-                  db/snapshot! (fn [_ _ s] s)
-                  db/event! (fn [_ _ kind payload] (swap! events conj [kind payload]))
-                  client/rpc! (fn [_ _ _] {})]
-      (is (= :invalid-verification-response
-             (:code (ex-data (try (desktop/set-text! {:store nil :client nil} "new")
-                                 (catch Exception e e))))))
-      (is (= "unknown" (get-in (last @events) [1 :outcome]))))))
+(deftest repl-workflow-uses-generic-multi-window-service-and-scoped-cleanup
+  (let [calls (atom []) native-sessions (atom {}) revisions (atom {})
+        native (fn [_ method args]
+                 (swap! calls conj [method args])
+                 (let [sid (:session_id args)]
+                   (case method
+                     :computer_capabilities {:sessions (vec (vals @native-sessions))}
+                     :computer_windows {:windows [{:window_id "source" :pid 12} {:window_id "destination" :pid 13}]}
+                     :computer_attach (let [sid (str "session-" (:window_id args))
+                                            session (assoc args :session_id sid)]
+                                        (swap! native-sessions assoc sid session) session)
+                     :computer_observe (let [n (get (swap! revisions update sid (fnil inc 0)) sid)]
+                                         {:session_id sid :snapshot_id (str sid "/" n) :complete true
+                                          :nodes [{:id (str sid "/node") :role "AXTextField" :value "old"
+                                                   :enabled true :settable true}]})
+                     :computer_act (assoc (select-keys args [:session_id :request_id :action]) :outcome "dispatched")
+                     :computer_screenshot {:session_id sid :data "png"}
+                     :computer_detach (do (swap! native-sessions dissoc sid) {:session_id sid :detached true}))))]
+    (with-redefs [agent/native! native agent/store! (constantly :store)
+                  memory/remember! (fn [& _] {}) db/event! (fn [& _])
+                  agent/once! (fn [_ _ _ run] (run))]
+      (let [c (desktop/connect!)
+            available (:windows (desktop/windows c))
+            a (desktop/attach! c (first available))
+            b (desktop/attach! c (second available))
+            sid-a (:session_id a) sid-b (:session_id b)]
+        (is (= 2 (:session_count (desktop/status c))))
+        (is (= sid-a (:session_id (desktop/observe! c sid-a))))
+        (desktop/act! c sid-b {:action "set_value" :selector {:role "AXTextField"} :value "copied"})
+        (let [action (second (last (filter #(= :computer_act (first %)) @calls)))]
+          (is (= sid-b (:session_id action)))
+          (is (= "copied" (:value action)))
+          (is (string? (:request_id action))))
+        (is (= "dispatched" (:outcome (desktop/batch! c sid-a [{:action "focus"}]))))
+        (is (= sid-b (:session_id (desktop/screenshot! c sid-b {:max_width 640}))))
+        (let [before @calls]
+          (is (thrown? clojure.lang.ExceptionInfo (desktop/observe! c nil)))
+          (is (thrown? clojure.lang.ExceptionInfo (desktop/observe! c sid-a {:session_id sid-b})))
+          (is (thrown? clojure.lang.ExceptionInfo (desktop/detach! c "foreign")))
+          (is (= before @calls)))
+        (desktop/detach! c sid-a)
+        (is (= #{sid-b} (set (keys @native-sessions))))
+        (desktop/close! c)
+        (is (empty? @native-sessions))
+        (is (= [sid-a sid-b] (mapv (comp :session_id second)
+                                  (filter #(= :computer_detach (first %)) @calls))))))))

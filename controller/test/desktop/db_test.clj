@@ -10,7 +10,7 @@
   (let [path (str (Files/createTempDirectory "DeskLoom 空格 XTDB-" (make-array FileAttribute 0)))
         session "persistence-self-test"
         snapshot {:session_id session :snapshot_id "snapshot-1" :complete true
-                  :window_title "Prototype fixture" :pid 1
+                  :window_title "Example document" :pid 1
                   :nodes [{:id "node-1" :role "AXTextArea" :value "你好 XTDB"
                            :title "" :enabled true :settable true :actions []}]}
         verification {:passed true :expected "你好 XTDB" :actual "你好 XTDB"}]

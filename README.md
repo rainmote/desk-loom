@@ -1,15 +1,26 @@
 # DeskLoom
 
-DeskLoom 是可通过 **`dlm`** 和 Clojure REPL 操作的本地桌面工具。当前验证范围为 TextEdit：Swift 无障碍读取与执行 → Clojure REPL 选择器 → AX 精确读回验证 → XTDB 2.2 本地持久化。没有 LLM 或云端调用。
+DeskLoom 是带有 LLM 操作面板的本地 **Computer Use** 工作台：选择窗口、输入任务，即可复用本机 Codex 的 **ChatGPT 订阅登录态**执行操作。也可通过 **MCP stdio** 或 **JSON Lines** 为其他 Agent 提供窗口选择、元素观察、点击、文本输入、快捷键、滚动、拖动和截图，并把访问过的页面保存到本地 **XTDB 2.2**。当前实现 macOS 后端；外部工具接口与模型厂商无关。
 
-SwiftUI 工作台和菜单栏显示目标应用、窗口预览与停止控制。测试文档在后台打开，连接、写入、读回和停止都不激活目标应用。紫色区域在测试窗口右上角显示简短的“控制中”，贴合标题栏右端，不遮挡正文，也不接收鼠标或键盘焦点；窗口被遮挡或切换到其他空间时按实际可见性隐藏，停止后移除。预览约每 0.6 秒捕获一次，仅捕获当前测试窗口。停止、窗口丢失或截图过期时会明确标记。
+## 使用 ChatGPT 订阅操作窗口
 
-若正使用 TextEdit 的其他文档，新建控制会话会返回 `target-in-use`，避免后台开文档仍切走同应用内的焦点；先切换到其他应用即可连接。已建立的控制会话可继续使用。自动更新重启采用后台启动，手动点击菜单“显示窗口”仍会正常打开工作台。
+1. 打开 DeskLoom，在「交给 LLM 操作」中检查登录状态。已有 Codex ChatGPT 登录会自动复用；尚未登录时点击「登录 ChatGPT」，在浏览器完成官方登录。
+2. 点击协作窗口旁的「刷新」，勾选允许操作的窗口（最多 8 个），再填写任务，例如「读取资料窗口，把摘要填写到另一个窗口」。模型可留空使用 Codex 内置默认值，也可填入账号支持的模型。
+3. 点击「执行任务」，LLM 会结合所有选定窗口的内容规划操作，并明确选择每一步的目标。「停止任务」取消推理并释放本任务的所有窗口。
 
-后台打开不请求激活应用，但窗口管理器仍可能自行聚焦新窗口。例如 OmniWM 的 Niri 布局会激活新平铺窗口；可为 `com.apple.TextEdit` 中标题匹配 `^DeskLoom [0-9A-F]{8}(?:\.txt)?(?: —.*)?$` 的测试文档单独设置浮动规则，再验证实际焦点。DeskLoom 不自动修改窗口管理器配置。
+无需填写 API Key。登录复用由官方 Codex CLI 完成，DeskLoom 不读取或复制 OAuth token、Keychain 凭据或浏览器 Cookie；仅在浏览器登录过 ChatGPT 时，仍需完成一次 Codex 登录。当前内置规划使用窗口无障碍文本与元素信息，窗口内容会发送给所选的 OpenAI 模型。详细边界及 CLI 示例见 [LLM 接入说明](docs/LLM.md)。
+
+启动已安装的应用后，让 Agent 运行 `dlm mcp`；自定义程序运行 `dlm agent`。完整配置、Claude Code / Cursor / Gemini CLI / VS Code 示例、动作参数及运行边界见 **[通用 Computer Use 接入指南](docs/COMPUTER_USE.md)**。CLI、LLM、MCP 和 Clojure REPL 使用同一套通用窗口控制。
+
+提速通过常驻 JVM、AX 直接操作、变化节点返回、最多 20 步批量操作、按需截图及页面内容去重实现。工具返回本地实测耗时；历史页面只提供语义选择器线索，操作前仍使用新观察校验。当前每个数据库目录只允许一个控制进程，该进程可同时保持最多 8 个明确选择的窗口会话；各窗口的快照、动作回执独立保存，具体输入操作按顺序执行。
+
+通用截图返回 `capture_match` 窗口关联证据。所有符合标题和几何规则的候选必须唯一，完整标题与中间省略标题同时匹配也会拒绝。省略路径还检查同进程 AX 与截图窗口的几何唯一性，并返回 `ax_selected_window_confirmed: true`；该字段仅在省略路径出现。具体字段与边界见[接入指南](docs/COMPUTER_USE.md#工具接口)。
+
+SwiftUI 工作台显示目标应用、窗口预览与停止控制。应用不限定为某个编辑器：从系统可枚举的已有窗口中选择目标，DeskLoom 不自动启动应用或创建文档。通用会话通过显式 `focus` 激活目标。紫色角标贴合当前操作窗口的标题栏右端，不接收鼠标或键盘焦点；窗口被遮挡或切换到其他空间时按实际可见性隐藏，停止后移除。窗口截图按需获取，避免持续后台捕获；窗口丢失或截图过期时会明确标记。
 
 ## 图标与菜单栏
 
+- 菜单栏始终只显示当前应用图标和实际受控窗口数量：空闲为 **0**，连接两个窗口为 **2**。窗口关闭或释放后自动减计数；勾选但尚未连接的窗口不计入。状态详情放在浮窗与悬停提示中。
 - 默认使用 **C · 可编程桌面**，可切换 **D · 窗口层叠**；两款均为透明背景。菜单栏与窗口立即生效，重启保留选择。
 - 工作台和菜单栏浮窗的顶部图标、名称与齿轮保持固定。点击齿轮时按钮高亮，下方内容切到设置页；再次点击回到控制页并取消高亮。两处页面状态独立，不另开设置窗口。
 - 菜单栏左键单击打开贴合按钮下方的原生浮窗，再点一次关闭；切换窗口、应用或点击外部时自动收起。
@@ -31,7 +42,7 @@ DeskLoom 固定安装到 **`/Applications/DeskLoom.app`**，可直接从“应�
 bash scripts/build-native.sh
 ```
 
-脚本先在临时目录完成编译、签名和验证，然后停止空闲的旧实例，更新“应用程序”中的同一路径并重新启动。若正在控制 TextEdit，会停止安装并提示先结束会话；构建失败不会影响正在使用的安装版。旧版备份保留到新版启动并通过 RPC 就绪检查，失败会尝试恢复旧版。旧 `.build` 应用首次迁移时保存为 ZIP 归档并移除可启动副本。
+脚本先在临时目录完成编译、签名和验证，然后停止空闲的旧实例，更新“应用程序”中的同一路径并重新启动。若有活跃控制会话，会停止安装并提示先结束会话；构建失败不会影响正在使用的安装版。旧版备份保留到新版启动并通过 RPC 就绪检查，失败会尝试恢复旧版。旧 `.build` 应用首次迁移时保存为 ZIP 归档并移除可启动副本。
 
 构建使用本机已有的 Apple Development / Developer ID 签名，并将证书选择固定在 `.runtime/signing-identity`。首次可用 `DESKLOOM_SIGNING_IDENTITY` 指定现有证书；旧环境变量 `COMPUTER_USE_SIGNING_IDENTITY` 兼容保留，后续拒绝无意切换。安装前还会验证新版本符合已安装版本的 designated requirement，防止重新编译改变代码身份。没有有效签名身份时停止，不回退临时签名。
 
@@ -63,15 +74,20 @@ dlm settings        # 在当前浮窗或工作台内进入设置页
 dlm icon            # 查看当前图标与安装包图标
 dlm icon D          # 切换为 D；dlm icon C 恢复默认
 dlm repl            # 启动 Clojure + XTDB REPL
+dlm mcp             # 启动通用 computer use MCP stdio 服务
+dlm agent           # 自定义 Agent 使用相同工具的 JSON Lines 服务
+dlm llm status      # 检查本机 Codex 的 ChatGPT 订阅登录状态
+dlm llm login       # 使用官方浏览器流程登录 ChatGPT
+dlm llm run --help  # 对明确选择的窗口执行自然语言任务
 dlm update          # 请求本地源码更新、安装并重启
 dlm rpc ui_state    # 发送一次原生 RPC
 dlm rpc focus_state # 只读前台应用、焦点窗口标识和应用激活序号
 dlm --help
 ```
 
-除 `open`、`repl`、帮助外，以上命令连接已运行的应用；应用未启动时先执行 `dlm open`。`update` 返回请求是否被接受，最终结果显示在工作台、菜单栏浮窗及本地 `update-state.json`。图标切换立即更新菜单栏和窗口，“应用程序”中的图标经过 `dlm update` 后同步。`rpc METHOD 'JSON对象'` 可传递原生协议参数；发生错误或超时不会自动重试动作。
+`mcp`、`agent` 是常驻服务，握手和工具发现无需连接原生应用；实际桌面操作前先执行 `dlm open`。其他状态和控制命令连接已运行的应用。`update` 返回请求是否被接受，最终结果显示在工作台、菜单栏浮窗及本地 `update-state.json`。图标切换立即更新菜单栏和窗口，“应用程序”中的图标经过 `dlm update` 后同步。`rpc METHOD 'JSON对象'` 可传递原生协议参数；发生错误或超时不会自动重试动作。
 
-CLI 仅使用 Python 标准库，连接 `127.0.0.1` 并从私有 endpoint 文件读取令牌，不输出令牌。`repl` 使用安装包记录的源码目录与项目本地 Clojure 运行时，因此仍需要保留源码项目。源码内也可直接运行 `scripts/dlm`；若 `~/.local/bin` 尚未加入 `PATH`，可使用完整路径 `~/.local/bin/dlm`，安装器不修改 shell 配置。
+CLI 入口仅使用 Python 标准库，连接 `127.0.0.1` 并从私有 endpoint 文件读取令牌，不输出令牌。`repl`、`mcp`、`agent` 使用安装包记录的源码目录与项目本地 Clojure 运行时，因此仍需要保留源码项目。源码内也可直接运行 `scripts/dlm`；若 `~/.local/bin` 尚未加入 `PATH`，可使用完整路径 `~/.local/bin/dlm`，安装器不修改 shell 配置。
 
 ## Clojure REPL
 
@@ -82,33 +98,30 @@ dlm repl
 ```clojure
 (def c (desktop/connect!))
 (desktop/status c)
-(desktop/start! c)
-(def snapshot (desktop/ready-snapshot! c))
-(def target (desktop/unique-text-area snapshot))
-(select-keys target [:id :role :value :settable])
-(desktop/set-text! c "Hello from Clojure\n中文验证：Swift AX → XTDB\n")
-(desktop/history c)
-(db/text-areas (:store c) (:session_id @(:session c)))
-(desktop/stop! c)
+(desktop/windows c) ; 从返回列表中明确选择窗口 ID
+(def attached (desktop/attach! c {:window_id "从列表选择的窗口ID"}))
+(def sid (:session_id attached))
+(desktop/observe! c sid)
+;; 对选定窗口的唯一可写文本区域写入，并读取实际回执：
+(desktop/act! c sid {:action "set_value"
+                    :selector {:role "AXTextArea" :settable true}
+                    :value "Hello from Clojure"})
+(desktop/history c sid)
+(desktop/detach! c sid)
 (desktop/close! c)
 ```
 
-`set-text!` 会重新观察、唯一定位、先保存动作意图、只发送一次写入，再精确比较 AX 读回的字符串。不要同时启动两个连接同一数据库目录的 REPL/demo。
-
-一键端到端运行：`scripts/clj -M:xtdb:demo`。详细命令和依赖说明见 [controller/README.md](controller/README.md)。
-
-完整桌面验收使用已 `connect!`、但尚未 `start!` 的连接，从同一个 REPL 运行 `(require '[desktop.acceptance :as acceptance])` 后执行 `(acceptance/run! c)`。它检查两次中文文本写入、六帧真实截图、角标跟随窗口移动与停止后的界面状态，并保存 `evidence/`；两项系统权限缺一时直接记录失败，不启动会话。完成后关闭连接，再用独立 JVM 运行 `desktop.audit` 核对该 session 的持久化记录。
+可再次调用 `attach!` 连接其他应用或同一应用的其他窗口。操作始终指定对应的 `session_id`；选择器必须在该窗口内唯一匹配。控制进程关闭时释放它拥有的所有窗口。不要同时启动两个使用同一数据库目录的控制进程，详情见 [controller/README.md](controller/README.md)。
 
 ## 范围与协议
 
-- 仅控制 DeskLoom 在 `~/Library/Application Support/DeskLoom/fixtures/` 创建的唯一 TextEdit 文档，不改已有文档。
+- `computer_*` 接口控制调用者明确选择的已有应用窗口，没有应用名称或 Bundle ID 白名单。已移除旧测试文档的专用 RPC；连接和操作统一使用通用接口。
 - HTTP RPC 仅监听 `127.0.0.1`，每次启动生成 token；endpoint 文件权限为 0600。token 不写入日志。
-- 原生 AX 句柄只留内存，元素绑定 30 秒内的观测快照；写入前再确认进程、窗口、祖先关系、角色和文本旧值。写入后旧快照失效。
+- 原生 AX 句柄只留内存；快照有效期为 15 秒。动作前再确认进程、窗口、祖先关系、角色和旧值，动作后旧快照失效。
 - 同一 `request_id` 的同一动作返回已记录结果；不同内容复用 ID 会被拒绝。DeskLoom 重启后不重放旧动作。
-- 操作成功必须通过新 AX 读回验证。结果未知时记录状态，不自动重试。
-- 验证中断写入关联动作的 `verification-error`，界面显示“验证中断”；持久化审计只认可最新文本动作的完整成功记录。
-- 验收使用 `move_window` 仅移动本次测试文档，并要求完整保留在可见屏幕内；通过新的 AX 观测验证角标跟随，最后恢复原位置。
-- 首版用有界 AX 树采集与定时窗口位置检查，尚未实现通用 AXObserver 事件流、任意应用操作或锁屏使用。
+- 通用回执区分 dispatched、verified、unknown；只有真实读回确认的写值才返回 verified，点击和按键的业务效果仍需后续观察。结果未知时记录状态，不自动重试。
+- LLM 宣布完成前重新观察全部所选窗口；完整状态发生变化时，用最新内容重新判断，并计入原步骤与时间上限。写入前仍严格校验所有来源和目标窗口，未确认的完成消息不会提前展示。
+- 使用有界 AX 树采集与定时窗口位置检查，尚未实现 AXObserver 事件流、Windows/Linux 后端或锁屏使用。通用操作的实际能力取决于目标应用的 AX 支持。
 
 ## 文件与数据
 
@@ -122,7 +135,7 @@ dlm repl
 - `assets/icons/`：选定的 C / D PNG 与生成提示词；构建时生成完整尺寸 ICNS 并打包。
 - `~/Library/Application Support/DeskLoom/appearance.json`：图标选择；同目录的 `update-state.json`、`update.log` 保存更新结果与日志。
 - `~/Library/Application Support/DeskLoom/xtdb/`：本地日志与数据库存储。
-- 同目录 `preview.png`：最新目标窗口图像；`ui-evidence/` 只保存DeskLoom 自身界面渲染。
+- 同目录 `ui-evidence/`：DeskLoom 自身界面渲染；通用窗口截图通过 `computer_screenshot` 按需返回。
 
 ## 检查
 
@@ -133,7 +146,18 @@ python3 tests/test_install_native.py
 python3 tests/test_update_native.py
 python3 tests/test_app_storage.py
 python3 tests/test_dlm.py
+python3 tests/test_mcp.py
+python3 tests/test_llm.py
 scripts/clj-test
+python3 tests/multiwindow_acceptance.py --live --with-llm # 独立测试应用双窗口协作，使用当前订阅
+# 可选：真实 Chrome → Edge 跨应用 LLM 读取/填写、独立读回与菜单计数
+python3 tests/cross_app_acceptance.py --live
+# 可选：真实通用接口闭环，仅操作独立测试应用
+python3 tests/computer_acceptance.py --live
+# 可选：已注册 Codex MCP + 独立 Chrome 窗口 + 默认 XTDB + 配对测速
+python3 tests/browser_acceptance.py --live
+# 可选：3 次独立 Chrome 启动、21 张截图，覆盖短标题和中间省略的长标题
+python3 tests/screenshot_acceptance.py --live
 ```
 
 RPC 诊断：`dlm status`，兼容入口为 `python3 scripts/rpc.py status`。CLI 测试使用隔离目录和临时本地服务，不连接真实应用。无系统权限时，负向协议测试仍可执行；它们不能证明真实 AX 操作和截图已经成功。端到端验证必须单独完成，并保留实际证据。

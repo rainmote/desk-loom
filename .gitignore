@@ -9,9 +9,12 @@ evidence/
 __pycache__/
 ._*
 
-# Local validation output and desktop captures
-/tests/**/*.json
-/tests/**/*.txt
-/tests/**/*.edn
-/tests/**/*.png
+# Local validation output and desktop captures; keep source fixtures trackable
+/tests/*.json
+/tests/*.txt
+/tests/*.edn
+/tests/*.png
+/tests/deskloom-*/
+/tests/ui-evidence-*/
+/tests/permission-diagnosis-*/
 /references/tokei/
