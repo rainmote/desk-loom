@@ -50,6 +50,7 @@ final class ComputerCoordinator {
         defer { publishing = false }
         for id in sessionOrder where sessions[id]?.engine.isActive != true {
             sessions[id]?.engine.onStateChange = nil
+            sessions[id]?.engine.tracksTarget = false
             sessions[id]?.engine.presentsTarget = false
             sessions.removeValue(forKey: id)
         }
@@ -142,6 +143,7 @@ final class ComputerCoordinator {
         sessions[id] = Session(engine: child, model: childModel)
         sessionOrder.append(id)
         currentSessionID = id
+        child.tracksTarget = true
         child.onStateChange = { [weak self] in self?.publishState() }
         publishState()
         var result = attached
@@ -205,6 +207,7 @@ final class ComputerCoordinator {
         let selected = try session(["session_id": sessionID], present: false)
         selected.engine.onStateChange = nil
         var result = selected.engine.detach()
+        selected.engine.tracksTarget = false
         selected.engine.presentsTarget = false
         sessions.removeValue(forKey: sessionID)
         sessionOrder.removeAll { $0 == sessionID }

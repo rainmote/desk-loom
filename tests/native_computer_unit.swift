@@ -32,9 +32,13 @@ final class AppModel {
 @MainActor
 final class InterfaceController {
     var clearCount = 0
-    func updateTargetFrame(_ rect: CGRect?, windowID: CGWindowID? = nil, processID: pid_t? = nil) {
+    func updateTargetFrame(_ rect: CGRect?, windowID: CGWindowID? = nil, processID: pid_t? = nil,
+                           sessionID: String? = nil) {
         if rect == nil { clearCount += 1 }
     }
+    func updateControlledTarget(sessionID: String, frame: CGRect?, windowID: CGWindowID?, processID: pid_t) {}
+    func removeControlledTarget(sessionID: String) {}
+    func needsControlledTargetIdentity(sessionID: String) -> Bool { true }
 }
 
 /// A deterministic window backend exercises coordinator ownership/routing without
@@ -46,6 +50,7 @@ final class FakeComputerSessionEngine: ComputerSessionEngine {
     var sessionIdentifier = ""
     var selectedWindowIdentifier: String?
     var presentsTarget = false
+    var tracksTarget = false
     var onStateChange: (() -> Void)?
     var updateInProgress: (() -> Bool)?
     var children: [FakeComputerSessionEngine] = []
@@ -364,6 +369,7 @@ struct NativeComputerUnitTests {
         precondition(idA != idB && model.activeWindowCount == 2)
         precondition(model.windowTitle == "B" && coordinator.currentSessionID == idB)
         precondition(!discovery.children[0].presentsTarget && discovery.children[1].presentsTarget)
+        precondition(discovery.children.allSatisfy { $0.tracksTarget })
         expect("window-already-attached") { _ = try coordinator.attach(["window_id": "A"]) }
         precondition(discovery.children.count == 2 && discovery.children[0].snapshot == snapshotA)
         expect("session-required") { _ = try coordinator.observe([:]) }
@@ -418,6 +424,7 @@ struct NativeComputerUnitTests {
         let sameApp = try coordinator.attach(["pid": 42])
         let sameAppID = sameApp["session_id"] as! String
         expect("window-already-attached") { _ = try coordinator.attach(["pid": 42]) }
+        precondition(discovery.children.last?.tracksTarget == false)
         precondition(model.activeWindowCount == 1 && coordinator.currentSessionID == sameAppID)
         for index in 1..<ComputerCoordinator.maximumSessions { _ = try coordinator.attach(["window_id": "limit-\(index)"]) }
         precondition(model.activeWindowCount == 8)

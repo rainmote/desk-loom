@@ -67,7 +67,7 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>DeskLoom</string>
 <key>CFBundleExecutable</key><string>DeskLoom</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>17</string>
+<key>CFBundleVersion</key><string>19</string>
 <key>CFBundleShortVersionString</key><string>0.11.0</string>
 <key>CFBundleIconFile</key><string>DeskLoomIconC</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>

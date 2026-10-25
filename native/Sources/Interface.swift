@@ -83,7 +83,6 @@ final class AppModel: ObservableObject {
 
 private enum InterfaceStyle {
     static let purple = Color(red: 0.55, green: 0.32, blue: 0.94)
-    static let nativePurple = NSColor(calibratedRed: 0.55, green: 0.32, blue: 0.94, alpha: 1)
 }
 
 func applicationIcon(_ variant: String) -> NSImage? {
@@ -108,38 +107,25 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
     private var lastPopoverDismissReason: String?
     private var pendingPopoverDismissReason: String?
     private var popoverClosing = false
-    private let overlay: TargetOverlayPanel
-    private let overlayView = TargetOverlayView(frame: NSRect(x: 0, y: 0, width: 100, height: 42))
+    private let targetOverlays = TargetOverlayController()
+    private let overlayPlaceholder = TargetOverlayView(frame: NSRect(x: 0, y: 0, width: 100, height: 42))
+    private var targetSessionID: String?
+    private var currentOverlay: TargetOverlayController.Marker? {
+        targetSessionID.flatMap { targetOverlays.markers[$0] }
+    }
     private var targetFrame: CGRect?
     private var targetWindowID: CGWindowID?
     private var targetProcessID: pid_t?
-    private var overlayVisibilityReason = "inactive"
     private var cancellable: AnyCancellable?
     private var overlayVisibilityCancellable: AnyCancellable?
     private var statusIconVariant: String?
+    private var chromeRefreshScheduled = false
+    private var overlayRefreshScheduled = false
 
     init(model: AppModel) {
         self.model = model
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        overlay = TargetOverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 100, height: 42),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
         super.init()
-        overlay.contentView = overlayView
-        overlay.isOpaque = false
-        overlay.backgroundColor = .clear
-        overlay.hasShadow = false
-        overlay.ignoresMouseEvents = true
-        overlay.hidesOnDeactivate = false
-        overlay.becomesKeyOnlyIfNeeded = true
-        overlay.isFloatingPanel = false
-        overlay.level = .normal
-        overlay.animationBehavior = .none
-        overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        overlay.isReleasedWhenClosed = false
 
         if let button = statusItem.button {
             button.target = self
@@ -172,18 +158,19 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         popover.contentSize = NSSize(width: 384, height: 490)
         cancellable = model.objectWillChange.sink { [weak self] _ in
             // Published sends before its value changes. Update native chrome on the next turn.
-            DispatchQueue.main.async { self?.refreshChrome() }
+            self?.scheduleChromeRefresh()
         }
         // Window movement and occlusion can change without another AX action.
         // Follow visible target geometry without activating either application.
         overlayVisibilityCancellable = Timer.publish(every: 0.2, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                guard let self, self.model.isActive else { return }
+                guard let self, !self.targetOverlays.isEmpty else { return }
                 self.refreshOverlay()
             }
         for name in [NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didHideApplicationNotification,
+                     NSWorkspace.didUnhideApplicationNotification,
                      NSWorkspace.activeSpaceDidChangeNotification] {
             NSWorkspace.shared.notificationCenter.addObserver(
                 self, selector: #selector(targetVisibilityChanged(_:)), name: name, object: nil)
@@ -289,21 +276,33 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
     }
 
     /// AX rectangles use a top-left global origin. AppKit windows use a bottom-left origin.
-    func updateTargetFrame(_ rect: CGRect?, windowID: CGWindowID? = nil, processID: pid_t? = nil) {
+    func updateTargetFrame(_ rect: CGRect?, windowID: CGWindowID? = nil, processID: pid_t? = nil,
+                           sessionID: String? = nil) {
+        targetSessionID = sessionID
         targetFrame = rect
         targetWindowID = rect == nil ? nil : windowID
         targetProcessID = rect == nil ? nil : processID
         let available = rect.map { $0.width > 0 && $0.height > 0 } ?? false
         if model.previewWindowAvailable != available { model.previewWindowAvailable = available }
+    }
+
+    func updateControlledTarget(sessionID: String, frame: CGRect?, windowID: CGWindowID?, processID: pid_t) {
+        targetOverlays.update(sessionID: sessionID, frame: frame, windowID: windowID, processID: processID)
         refreshOverlay()
     }
 
+    func needsControlledTargetIdentity(sessionID: String) -> Bool {
+        targetOverlays.markers[sessionID]?.windowID == nil
+    }
+
+    func removeControlledTarget(sessionID: String) {
+        targetOverlays.remove(sessionID: sessionID)
+    }
+
     @objc private func targetVisibilityChanged(_ notification: Notification) {
-        // Hide immediately while a Space/application transition settles. The
-        // next visibility tick only restores a marker over its actual target.
-        overlay.orderOut(nil)
-        overlayVisibilityReason = "visibility_changed"
-        DispatchQueue.main.async { [weak self] in self?.refreshOverlay() }
+        // Refresh against real visibility; activation alone must not blink
+        // markers on windows that are still visible and controlled.
+        refreshOverlay()
     }
 
     func showPopover() {
@@ -411,16 +410,17 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         }
         return [
             "permissionGuide": permissionGuide.diagnostics(),
-            "overlayVisible": overlay.isVisible,
-            "overlayFrame": rectData(overlay.frame),
-            "overlayWindowNumber": overlay.windowNumber,
-            "overlayCanBecomeKey": overlay.canBecomeKey,
-            "overlayCanBecomeMain": overlay.canBecomeMain,
-            "overlayIsKeyWindow": overlay.isKeyWindow,
-            "overlayIgnoresMouseEvents": overlay.ignoresMouseEvents,
-            "overlayLevel": overlay.level.rawValue,
-            "overlayLabel": overlayView.label,
-            "overlayVisibilityReason": overlayVisibilityReason,
+            "overlayVisible": currentOverlay?.panel.isVisible ?? false,
+            "overlayFrame": rectData(currentOverlay?.panel.frame ?? .zero),
+            "overlayWindowNumber": currentOverlay?.panel.windowNumber ?? 0,
+            "overlayCanBecomeKey": currentOverlay?.panel.canBecomeKey ?? false,
+            "overlayCanBecomeMain": currentOverlay?.panel.canBecomeMain ?? false,
+            "overlayIsKeyWindow": currentOverlay?.panel.isKeyWindow ?? false,
+            "overlayIgnoresMouseEvents": currentOverlay?.panel.ignoresMouseEvents ?? true,
+            "overlayLevel": currentOverlay?.panel.level.rawValue ?? NSWindow.Level.normal.rawValue,
+            "overlayLabel": currentOverlay?.view.label ?? "控制中",
+            "overlayVisibilityReason": currentOverlay?.visibilityReason ?? "inactive",
+            "overlays": targetOverlays.diagnostics(),
             "targetFrame": targetFrame.map(rectData) as Any? ?? NSNull(),
             "targetWindowID": targetWindowID as Any? ?? NSNull(),
             "targetProcessID": targetProcessID as Any? ?? NSNull(),
@@ -502,7 +502,7 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         if let view = inspector?.contentView { try render(view, name: "inspector") }
         if let view = settingsHostView { try render(view, name: "settings") }
         if let view = statusItem.button { try render(view, name: "status-item") }
-        if let view = overlay.contentView { try render(view, name: "overlay") }
+        try render(currentOverlay?.view ?? overlayPlaceholder, name: "overlay")
         if popover.isShown, let view = popover.contentViewController?.view {
             try render(view, name: "popover")
         }
@@ -526,6 +526,16 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         performMenuAction(action)
     }
 
+    private func scheduleChromeRefresh() {
+        guard !chromeRefreshScheduled else { return }
+        chromeRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.chromeRefreshScheduled = false
+            self.refreshChrome()
+        }
+    }
+
     private func refreshChrome() {
         let attributed = NSAttributedString(string: "\(model.controlledWindowCount)", attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
@@ -536,7 +546,6 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         statusItem.button?.setAccessibilityValue("正在控制 \(model.controlledWindowCount) 个窗口，\(model.appName)，\(model.phase)")
         updateMenuItem?.isEnabled = !model.isUpdating && !model.isActive && !model.llmRunning && model.onUpdate != nil
         refreshStatusIcon()
-        refreshOverlay()
     }
 
     private func refreshStatusIcon() {
@@ -550,135 +559,17 @@ final class InterfaceController: NSObject, NSWindowDelegate, NSPopoverDelegate {
     }
 
     private func refreshOverlay() {
-        func hide(_ reason: String) {
-            overlayVisibilityReason = reason
-            overlay.orderOut(nil)
+        // A session publishes several model fields per observation/action. Its
+        // preview and menu changes do not change marker geometry or ownership.
+        // Coalesce actual target/visibility updates so WindowServer sees one
+        // ordering pass after the batch, instead of repeated stale-list orders.
+        guard !overlayRefreshScheduled else { return }
+        overlayRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.overlayRefreshScheduled = false
+            self.targetOverlays.refresh()
         }
-        guard model.isActive else { hide("inactive"); return }
-        guard let targetFrame,
-              targetFrame.width > 0, targetFrame.height > 0,
-              let primaryScreen = NSScreen.screens.first else {
-            hide("target_unavailable")
-            return
-        }
-        // CGWindowList is front-to-back and only includes the current Space.
-        // Window bounds and owner PID remain available without screen capture.
-        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                       kCGNullWindowID) as? [[String: Any]] else {
-            hide("window_list_unavailable")
-            return
-        }
-        func bounds(of window: [String: Any]) -> CGRect? {
-            guard let value = window[kCGWindowBounds as String] as? [String: Any] else { return nil }
-            return CGRect(dictionaryRepresentation: value as CFDictionary)
-        }
-        func matches(_ window: [String: Any]) -> Bool {
-            guard let number = window[kCGWindowNumber as String] as? NSNumber,
-                  let owner = window[kCGWindowOwnerPID as String] as? NSNumber else { return false }
-            if let targetProcessID, owner.int32Value != targetProcessID { return false }
-            if let targetWindowID { return number.uint32Value == targetWindowID }
-            guard targetProcessID != nil, let frame = bounds(of: window) else { return false }
-            return abs(frame.minX - targetFrame.minX) < 3 && abs(frame.minY - targetFrame.minY) < 3 &&
-                abs(frame.width - targetFrame.width) < 3 && abs(frame.height - targetFrame.height) < 3
-        }
-        let candidates = windows.indices.filter { matches(windows[$0]) }
-        guard candidates.count == 1, let targetIndex = candidates.first,
-              let number = windows[targetIndex][kCGWindowNumber as String] as? NSNumber,
-              ((windows[targetIndex][kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
-              let visibleFrame = bounds(of: windows[targetIndex]),
-              visibleFrame.width >= 180, visibleFrame.height >= 42 else {
-            hide("target_not_visible")
-            return
-        }
-        overlayView.label = "控制中"
-        let preferredSize = overlayView.intrinsicContentSize
-        let size = NSSize(width: min(preferredSize.width, visibleFrame.width), height: preferredSize.height)
-        let overlayBounds = CGRect(x: visibleFrame.maxX - size.width + 3, y: visibleFrame.minY - 3,
-                                   width: size.width, height: size.height)
-        // Check the filled label, not the transparent margin or the outer 3px
-        // corner. A top-aligned target's menu bar covers that corner
-        // without covering the label. Window ordering clips the corner itself.
-        let labelBounds = CGRect(x: overlayBounds.minX + 9, y: visibleFrame.minY + 6,
-                                 width: size.width - 24, height: 24)
-        let covered = windows[..<targetIndex].contains { window in
-            guard let windowNumber = window[kCGWindowNumber as String] as? NSNumber,
-                  windowNumber.intValue != overlay.windowNumber,
-                  // Higher layers include full-screen transparent system views.
-                  // Our normal-level panel stays below their actual pixels.
-                  (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                  ((window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
-                  let frame = bounds(of: window) else { return false }
-            return frame.intersects(labelBounds)
-        }
-        guard !covered else { hide("target_covered"); return }
-        overlay.setFrame(NSRect(x: overlayBounds.minX,
-                                y: primaryScreen.frame.maxY - overlayBounds.maxY,
-                                width: size.width,
-                                height: size.height), display: true)
-        overlay.order(.above, relativeTo: number.intValue)
-        overlayVisibilityReason = "visible"
-    }
-}
-
-@MainActor
-private final class TargetOverlayPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
-
-@MainActor
-private final class TargetOverlayView: NSView {
-    var label: String = "控制中" {
-        didSet {
-            guard label != oldValue else { return }
-            needsDisplay = true
-            invalidateIntrinsicContentSize()
-            setAccessibilityLabel(label)
-        }
-    }
-    override var isOpaque: Bool { false }
-    private let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: max(96, (label as NSString).size(withAttributes: [.font: font]).width + 63), height: 42)
-    }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let purple = InterfaceStyle.nativePurple
-        let corner = NSBezierPath()
-        corner.move(to: NSPoint(x: bounds.width - 3, y: bounds.height - 30))
-        corner.line(to: NSPoint(x: bounds.width - 3, y: bounds.height - 8))
-        corner.curve(to: NSPoint(x: bounds.width - 8, y: bounds.height - 3),
-                     controlPoint1: NSPoint(x: bounds.width - 3, y: bounds.height - 5),
-                     controlPoint2: NSPoint(x: bounds.width - 5, y: bounds.height - 3))
-        corner.line(to: NSPoint(x: bounds.width - 33, y: bounds.height - 3))
-        corner.lineWidth = 4
-        corner.lineCapStyle = .round
-        purple.setStroke()
-        corner.stroke()
-
-        // Attach the label to the upper-right title bar, leaving the window
-        // buttons and the document's first line clear.
-        let pill = NSRect(x: 9, y: 9, width: bounds.width - 24, height: 24)
-        NSGraphicsContext.saveGraphicsState()
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.16)
-        shadow.shadowBlurRadius = 5
-        shadow.shadowOffset = NSSize(width: 0, height: -1)
-        shadow.set()
-        purple.setFill()
-        NSBezierPath(roundedRect: pill, xRadius: 8, yRadius: 8).fill()
-        NSGraphicsContext.restoreGraphicsState()
-        NSColor.white.withAlphaComponent(0.9).setFill()
-        NSBezierPath(ovalIn: NSRect(x: pill.minX + 11, y: pill.midY - 3, width: 6, height: 6)).fill()
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        (label as NSString).draw(in: NSRect(x: pill.minX + 24, y: pill.midY - 8,
-                                           width: pill.width - 34, height: 18), withAttributes: [
-            .font: font,
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph
-        ])
     }
 }
 

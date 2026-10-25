@@ -10,6 +10,7 @@ protocol ComputerSessionEngine: AnyObject {
     var sessionIdentifier: String { get }
     var selectedWindowIdentifier: String? { get }
     var presentsTarget: Bool { get set }
+    var tracksTarget: Bool { get set }
     var onStateChange: (() -> Void)? { get set }
     var updateInProgress: (() -> Bool)? { get set }
     func capabilities() -> [String: Any]
@@ -71,6 +72,12 @@ final class ComputerEngine: ComputerSessionEngine {
     var selectedWindowIdentifier: String? { selected?.id }
     var onStateChange: (() -> Void)?
     var updateInProgress: (() -> Bool)?
+    var tracksTarget = false {
+        didSet {
+            if tracksTarget && !oldValue, let selected { updateTarget(selected) }
+            else if !tracksTarget && oldValue { interface.removeControlledTarget(sessionID: sessionID) }
+        }
+    }
     var presentsTarget = true {
         didSet {
             if presentsTarget && !oldValue, let selected { updateTarget(selected) }
@@ -329,9 +336,27 @@ final class ComputerEngine: ComputerSessionEngine {
         model.windowTitle = Self.boundedUTF8(string(target.element, kAXTitleAttribute), maximumBytes: 8192).text
         lastAppName = model.appName
         lastWindowTitle = model.windowTitle
+        let targetFrame = frame(target.element)
+        if tracksTarget {
+            var markerFrame = targetFrame
+            if capturedWindowID == nil, interface.needsControlledTargetIdentity(sessionID: sessionID),
+               let targetFrame {
+                let identity = captureAXIdentity(target)
+                let matches = identity.windows.filter {
+                    $0.bounds.map { Self.captureBoundsMatch($0, accessibility: targetFrame) } ?? false
+                }
+                if !identity.enumerationComplete || identity.enumerationError != .success ||
+                    identity.windows.contains(where: { $0.bounds == nil }) ||
+                    matches.count != 1 || matches.first?.isSelected != true {
+                    markerFrame = nil
+                }
+            }
+            interface.updateControlledTarget(sessionID: sessionID, frame: markerFrame, windowID: capturedWindowID,
+                                             processID: target.application.processIdentifier)
+        }
         if presentsTarget {
-            interface.updateTargetFrame(frame(target.element), windowID: capturedWindowID,
-                                        processID: target.application.processIdentifier)
+            interface.updateTargetFrame(targetFrame, windowID: capturedWindowID,
+                                        processID: target.application.processIdentifier, sessionID: sessionID)
         }
         onStateChange?()
     }
@@ -1127,6 +1152,7 @@ final class ComputerEngine: ComputerSessionEngine {
         model.phase = "已停止"
         lastPhase = model.phase
         model.detail = "通用电脑控制会话已断开"
+        interface.removeControlledTarget(sessionID: previousSession)
         if presentsTarget { interface.updateTargetFrame(nil) }
         onStateChange?()
         return ["session_id": previousSession, "active": false, "detached": true]
